@@ -21,11 +21,12 @@ pub enum Tool {
     Polygon,
     Ellipse,
     RoundedRectangle,
+    Outliner,
 }
 
 impl Tool {
     /// All tools, in tool box order.
-    pub const ALL: [Tool; 18] = [
+    pub const ALL: [Tool; 19] = [
         Tool::FreeFormSelect,
         Tool::Select,
         Tool::MagicWand,
@@ -44,6 +45,7 @@ impl Tool {
         Tool::Polygon,
         Tool::Ellipse,
         Tool::RoundedRectangle,
+        Tool::Outliner,
     ];
 
     /// The tool's display name (also used as its undo history entry).
@@ -67,6 +69,7 @@ impl Tool {
             Tool::Polygon => "Polygon",
             Tool::Ellipse => "Ellipse",
             Tool::RoundedRectangle => "Rounded Rectangle",
+            Tool::Outliner => "Outliner",
         }
     }
 
@@ -115,11 +118,15 @@ impl Tool {
         matches!(self, Tool::Fill | Tool::PickColor | Tool::Magnifier)
     }
 
-    /// Selection tools.
+    /// Selection tools (the Outliner also defines a rectangular selection).
     pub fn is_selection(self) -> bool {
         matches!(
             self,
-            Tool::Select | Tool::FreeFormSelect | Tool::MagicWand | Tool::SelectionBrush
+            Tool::Select
+                | Tool::FreeFormSelect
+                | Tool::MagicWand
+                | Tool::SelectionBrush
+                | Tool::Outliner
         )
     }
 }

@@ -1,9 +1,9 @@
 //! The tool box and tool options on the left.
 
 use eframe::egui;
-use rspaint_core::BrushShape;
+use rspaint_core::{BrushShape, Color};
 
-use crate::app::{PaintApp, ShapeFill};
+use crate::app::{BorderPlacement, PaintApp, ShapeFill};
 use crate::tools::Tool;
 
 /// Draws the tool selection buttons and the options for the active tool.
@@ -34,6 +34,32 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.separator();
                 ui.label(egui::RichText::new("Options").strong());
                 tool_options(app, ui);
+
+                ui.add_space(6.0);
+                ui.separator();
+                let label = if app.selection.is_some() {
+                    "Replace Color (selection)"
+                } else {
+                    "Replace Color (all)"
+                };
+                if ui
+                    .button(label)
+                    .on_hover_text("Replace the foreground color with the background color")
+                    .clicked()
+                {
+                    app.replace_primary_with_secondary();
+                }
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Grid");
+                    ui.add(
+                        egui::DragValue::new(&mut app.grid_opacity)
+                            .range(0..=100)
+                            .suffix("%"),
+                    );
+                });
             });
         });
 }
@@ -67,6 +93,31 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
             );
             ui.radio_value(&mut app.fill_style, ShapeFill::FilledOnly, "Fill only");
         }
+        Tool::Outliner => {
+            size_row(ui, "Size", &mut app.outliner_size, 1..=50);
+            ui.label("Position");
+            ui.radio_value(
+                &mut app.outliner_placement,
+                BorderPlacement::Outside,
+                "Outside",
+            );
+            ui.radio_value(
+                &mut app.outliner_placement,
+                BorderPlacement::OneInward,
+                "1px inside",
+            );
+            ui.radio_value(
+                &mut app.outliner_placement,
+                BorderPlacement::Symmetric,
+                "Symmetric",
+            );
+            ui.checkbox(&mut app.outliner_concave, "Concave corners");
+            if app.outliner_concave {
+                ui.label("Corner color");
+                color_rgb_controls(ui, &mut app.outliner_color);
+            }
+            ui.label("Drag on the canvas to apply");
+        }
         Tool::Select | Tool::FreeFormSelect | Tool::MagicWand => {
             ui.checkbox(&mut app.selection_transparent, "Transparent");
             if app.tool == Tool::MagicWand {
@@ -91,6 +142,14 @@ fn size_row(ui: &mut egui::Ui, label: &str, value: &mut u32, range: std::ops::Ra
     ui.horizontal(|ui| {
         ui.label(label);
         ui.add(egui::DragValue::new(value).range(range).speed(0.5));
+    });
+}
+
+fn color_rgb_controls(ui: &mut egui::Ui, color: &mut Color) {
+    ui.horizontal(|ui| {
+        ui.add(egui::DragValue::new(&mut color.r).range(0..=255));
+        ui.add(egui::DragValue::new(&mut color.g).range(0..=255));
+        ui.add(egui::DragValue::new(&mut color.b).range(0..=255));
     });
 }
 

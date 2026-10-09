@@ -103,6 +103,9 @@ struct Stroke {
     preview_rect: Option<RectI>,
 }
 
+/// A horizontal selection highlight run `(y, x_start, x_end)`, inclusive.
+pub type HighlightRun = (i32, i32, i32);
+
 /// A floating selection: pixel content plus its position on the canvas.
 #[derive(Clone)]
 pub struct Selection {
@@ -117,6 +120,9 @@ pub struct Selection {
     boundary: Vec<rspaint_core::selection::BoundarySegment>,
     /// Per-pixel selected area (bounding-box sized). Empty means "whole box".
     mask_bits: Vec<bool>,
+    /// Cached horizontal runs `(y, x_start, x_end)` of the mask, relative to
+    /// the origin, for drawing the selection highlight efficiently.
+    runs: Vec<HighlightRun>,
     floating: bool,
     dragging: bool,
     moved: bool,
@@ -202,6 +208,16 @@ pub struct PaintApp {
     pub round_radius: u32,
     /// Whether shape tools fill their interior with the background color.
     pub fill_style: ShapeFill,
+    /// Opacity of the pixel grid, as a percentage (0-100).
+    pub grid_opacity: u32,
+    /// Outliner: border thickness in pixels.
+    pub outliner_size: u32,
+    /// Outliner: whether to fill concave corners with the extra color.
+    pub outliner_concave: bool,
+    /// Outliner: extra color used for concave corners.
+    pub outliner_color: Color,
+    /// Outliner: where the border is drawn relative to the contour.
+    pub outliner_placement: BorderPlacement,
     /// Current zoom factor (1.0 = 100%).
     pub magnification: f32,
     /// Pan offset of the canvas top-left relative to the viewport top-left.
@@ -242,6 +258,8 @@ pub struct PaintApp {
     sel_brush_last: Option<(i32, i32)>,
     /// Cached outline of the in-progress Selection Brush mask.
     sel_brush_boundary: Vec<rspaint_core::selection::BoundarySegment>,
+    /// Cached highlight runs of the in-progress Selection Brush mask.
+    sel_brush_runs: Vec<HighlightRun>,
     /// Whether the command (Ctrl/Cmd) key was held last frame.
     ctrl_down: bool,
     /// Whether the command key was combined with another input this hold.
@@ -327,6 +345,11 @@ impl PaintApp {
             stroke_size: 1,
             round_radius: 10,
             fill_style: ShapeFill::Outline,
+            grid_opacity: 70,
+            outliner_size: 1,
+            outliner_concave: false,
+            outliner_color: Color::WHITE,
+            outliner_placement: BorderPlacement::Outside,
             magnification: 1.0,
             pan: egui::Vec2::ZERO,
             file_path: None,
@@ -347,6 +370,7 @@ impl PaintApp {
             sel_brush_active: false,
             sel_brush_last: None,
             sel_brush_boundary: Vec::new(),
+            sel_brush_runs: Vec::new(),
             ctrl_down: false,
             ctrl_tap_used: false,
             show_history: false,
@@ -839,6 +863,7 @@ impl PaintApp {
         self.sel_brush_active = false;
         self.sel_brush_last = None;
         self.sel_brush_boundary.clear();
+        self.sel_brush_runs.clear();
 
         let (width, height) = (self.document.width(), self.document.height());
         let mask = std::mem::take(&mut self.sel_brush_mask);
@@ -875,6 +900,7 @@ impl PaintApp {
             }
         }
         let boundary = rspaint_core::selection::boundary_segments(&box_mask, box_w, box_h);
+        let runs = runs_from_mask(&box_mask, box_w, box_h);
         self.selection = Some(Selection {
             pixels: content,
             x: min_x,
@@ -883,6 +909,7 @@ impl PaintApp {
             mask: true,
             boundary,
             mask_bits: box_mask,
+            runs,
             floating: false,
             dragging: false,
             moved: false,
@@ -911,12 +938,43 @@ impl PaintApp {
         }
         self.sel_brush_boundary =
             rspaint_core::selection::boundary_segments(&self.sel_brush_mask, width, height);
+        self.sel_brush_runs = runs_from_mask(&self.sel_brush_mask, width, height);
     }
 
     /// The in-progress Selection Brush outline (canvas coordinates).
     pub fn selection_brush_boundary(&self) -> Option<&[rspaint_core::selection::BoundarySegment]> {
         self.sel_brush_active
             .then_some(self.sel_brush_boundary.as_slice())
+    }
+
+    /// The in-progress Selection Brush highlight runs (canvas coordinates).
+    pub fn selection_brush_runs(&self) -> Option<&[HighlightRun]> {
+        self.sel_brush_active
+            .then_some(self.sel_brush_runs.as_slice())
+    }
+
+    /// The active selection's highlight runs and origin.
+    pub fn selection_runs(&self) -> Option<(&[HighlightRun], (i32, i32))> {
+        let selection = self.selection.as_ref()?;
+        Some((selection.runs.as_slice(), (selection.x, selection.y)))
+    }
+
+    /// Selects the whole image (Ctrl+E).
+    pub fn select_all(&mut self) {
+        let width = self.document.width();
+        let height = self.document.height();
+        let pixels =
+            rspaint_core::selection::extract_rect(&self.document.buffer, 0, 0, width, height);
+        let region = NewRegion {
+            pixels,
+            x: 0,
+            y: 0,
+            mask_bits: vec![true; (width * height) as usize],
+            outline: Vec::new(),
+            mask: false,
+            name: "Select All",
+        };
+        self.combine_new_region(region, false, false);
     }
 
     /// Whether a canvas point lies within the active selection.
@@ -1016,6 +1074,11 @@ impl PaintApp {
         }
         if self.creating_selection.is_some() {
             self.finish_creating_selection();
+            // The Outliner applies as soon as the rectangle is drawn.
+            if self.tool == Tool::Outliner && self.selection.is_some() {
+                self.apply_outliner();
+                self.deselect();
+            }
         }
     }
 
@@ -1331,6 +1394,249 @@ impl PaintApp {
         self.mark_full();
         self.commit(name);
         self.show_flip_rotate = false;
+    }
+
+    /// Replaces the foreground color with the background color.
+    ///
+    /// If there is a selection, only the pixels inside it are affected;
+    /// otherwise the whole image is.
+    pub fn replace_primary_with_secondary(&mut self) {
+        let from = self.foreground;
+        let to = self.background;
+        if from == to {
+            return;
+        }
+
+        if let Some(selection) = self.selection.as_ref() {
+            let (ox, oy) = (selection.x, selection.y);
+            let (w, h) = (selection.pixels.width(), selection.pixels.height());
+            // Update the canvas within the selection...
+            for ly in 0..h {
+                for lx in 0..w {
+                    if !selection
+                        .mask_bits
+                        .get((ly * w + lx) as usize)
+                        .copied()
+                        .unwrap_or(true)
+                    {
+                        continue;
+                    }
+                    let cx = ox + lx as i32;
+                    let cy = oy + ly as i32;
+                    if cx >= 0
+                        && cy >= 0
+                        && self.document.buffer.get(cx as u32, cy as u32) == Some(from)
+                    {
+                        self.document.buffer.set(cx as u32, cy as u32, to);
+                    }
+                }
+            }
+            // ...and the selection's floating content.
+            if let Some(selection) = self.selection.as_mut() {
+                for ly in 0..h {
+                    for lx in 0..w {
+                        if selection
+                            .mask_bits
+                            .get((ly * w + lx) as usize)
+                            .copied()
+                            .unwrap_or(true)
+                            && selection.pixels.get(lx, ly) == Some(from)
+                        {
+                            selection.pixels.set(lx, ly, to);
+                        }
+                    }
+                }
+            }
+        } else {
+            rspaint_core::fill::replace_color(&mut self.document.buffer, from, to);
+        }
+
+        self.mark_full();
+        self.commit("Replace Color");
+    }
+
+    /// Applies the Outliner tool to the current (rectangular) selection.
+    ///
+    /// Detects the contour of the non-background colors inside the selection
+    /// and paints a border with the foreground color (and the extra color at
+    /// concave corners), scoped to the selection's bounding box.
+    pub fn apply_outliner(&mut self) {
+        let Some(selection) = self.selection.as_ref() else {
+            return;
+        };
+        let rx = selection.x;
+        let ry = selection.y;
+        let rw = selection.pixels.width() as i32;
+        let rh = selection.pixels.height() as i32;
+        if rw < 1 || rh < 1 {
+            return;
+        }
+
+        let bg = self.background;
+        let fg = self.foreground;
+        let extra = self.outliner_color;
+        let size = self.outliner_size.max(1) as i32;
+        let concave = self.outliner_concave;
+        let (outward, inward) = match self.outliner_placement {
+            BorderPlacement::Outside => (size, 0),
+            BorderPlacement::OneInward => (size.saturating_sub(1), 1),
+            BorderPlacement::Symmetric => ((size + 1) / 2, size / 2),
+        };
+
+        let region = rspaint_core::selection::extract_rect(
+            &self.document.buffer,
+            rx,
+            ry,
+            rw as u32,
+            rh as u32,
+        );
+        let in_rect = |lx: i32, ly: i32| lx >= 0 && ly >= 0 && lx < rw && ly < rh;
+        let is_bg =
+            |lx: i32, ly: i32| in_rect(lx, ly) && region.get(lx as u32, ly as u32) == Some(bg);
+        let is_obj =
+            |lx: i32, ly: i32| in_rect(lx, ly) && region.get(lx as u32, ly as u32) != Some(bg);
+        let area = (rw * rh) as usize;
+        let index = |lx: i32, ly: i32| (ly * rw + lx) as usize;
+        let orth = [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)];
+
+        // Outside region: 4-connected flood fill of the background color from
+        // the rectangle's edges.
+        let mut outside = vec![false; area];
+        let mut stack: Vec<(i32, i32)> = Vec::new();
+        for lx in 0..rw {
+            for ly in [0, rh - 1] {
+                if is_bg(lx, ly) {
+                    stack.push((lx, ly));
+                }
+            }
+        }
+        for ly in 0..rh {
+            for lx in [0, rw - 1] {
+                if is_bg(lx, ly) {
+                    stack.push((lx, ly));
+                }
+            }
+        }
+        while let Some((lx, ly)) = stack.pop() {
+            if !is_bg(lx, ly) {
+                continue;
+            }
+            let i = index(lx, ly);
+            if outside[i] {
+                continue;
+            }
+            outside[i] = true;
+            for (dx, dy) in orth {
+                stack.push((lx + dx, ly + dy));
+            }
+        }
+
+        let mut painted: Vec<Option<Color>> = vec![None; area];
+
+        // Outward layers: background pixels, starting from the contour.
+        let mut prev: Vec<bool> = vec![false; area];
+        for layer in 0..outward {
+            let mut current = vec![false; area];
+            for ly in 0..rh {
+                for lx in 0..rw {
+                    let i = index(lx, ly);
+                    if painted[i].is_some() || !is_bg(lx, ly) {
+                        continue;
+                    }
+                    let adjacent = if layer == 0 {
+                        outside[i] && orth.iter().any(|&(dx, dy)| is_obj(lx + dx, ly + dy))
+                    } else {
+                        orth.iter().any(|&(dx, dy)| {
+                            in_rect(lx + dx, ly + dy) && prev[index(lx + dx, ly + dy)]
+                        })
+                    };
+                    if adjacent {
+                        painted[i] = Some(fg);
+                        current[i] = true;
+                    }
+                }
+            }
+            prev = current;
+        }
+
+        // Inward layers: object pixels, starting from the contour's object side.
+        let mut prev: Vec<bool> = vec![false; area];
+        for layer in 0..inward {
+            let mut current = vec![false; area];
+            for ly in 0..rh {
+                for lx in 0..rw {
+                    let i = index(lx, ly);
+                    if painted[i].is_some() || !is_obj(lx, ly) {
+                        continue;
+                    }
+                    let adjacent = if layer == 0 {
+                        orth.iter().any(|&(dx, dy)| {
+                            is_bg(lx + dx, ly + dy)
+                                && in_rect(lx + dx, ly + dy)
+                                && outside[index(lx + dx, ly + dy)]
+                        })
+                    } else {
+                        orth.iter().any(|&(dx, dy)| {
+                            in_rect(lx + dx, ly + dy) && prev[index(lx + dx, ly + dy)]
+                        })
+                    };
+                    if adjacent {
+                        painted[i] = Some(fg);
+                        current[i] = true;
+                    }
+                }
+            }
+            prev = current;
+        }
+
+        // Concave corners pass (after the last layer): background pixels
+        // adjacent to the painted border that sit in a concave corner get the
+        // extra color.
+        if concave {
+            // Snapshot of the border only, so the extra-color pixels painted
+            // here don't count as border and don't cascade.
+            let border: Vec<bool> = painted.iter().map(|p| p.is_some()).collect();
+            for ly in 0..rh {
+                for lx in 0..rw {
+                    let i = index(lx, ly);
+                    // A background pixel on the outside of the border that has
+                    // two orthogonal neighbors of the border color (a concave
+                    // corner) gets the extra color.
+                    if !is_bg(lx, ly) || painted[i].is_some() || !outside[i] {
+                        continue;
+                    }
+                    let up = in_rect(lx, ly - 1) && border[index(lx, ly - 1)];
+                    let down = in_rect(lx, ly + 1) && border[index(lx, ly + 1)];
+                    let left = in_rect(lx - 1, ly) && border[index(lx - 1, ly)];
+                    let right = in_rect(lx + 1, ly) && border[index(lx + 1, ly)];
+                    if (up || down) && (left || right) {
+                        painted[i] = Some(extra);
+                    }
+                }
+            }
+        }
+
+        let mut changed = false;
+        for ly in 0..rh {
+            for lx in 0..rw {
+                if let Some(color) = painted[index(lx, ly)] {
+                    let x = rx + lx;
+                    let y = ry + ly;
+                    if x >= 0
+                        && y >= 0
+                        && self.document.buffer.get(x as u32, y as u32) != Some(color)
+                    {
+                        self.document.buffer.set(x as u32, y as u32, color);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if changed {
+            self.mark_full();
+            self.commit("Outliner");
+        }
     }
 
     /// Inverts the colors of the whole image.
@@ -1774,6 +2080,8 @@ impl PaintApp {
                 self.show_history = true;
             } else if i.consume_key(Modifiers::CTRL, Key::I) {
                 self.invert_colors();
+            } else if i.consume_key(Modifiers::CTRL, Key::E) {
+                self.select_all();
             } else if i.consume_key(Modifiers::CTRL, Key::R) {
                 self.show_flip_rotate = true;
             } else if i.consume_key(Modifiers::CTRL, Key::W) {
@@ -1932,6 +2240,7 @@ impl PaintApp {
                 bool_f32(self.srgb_output),
             ],
             uv_rect,
+            params: [self.grid_opacity as f32 / 100.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -2221,6 +2530,17 @@ pub enum ShapeFill {
     FilledOnly,
 }
 
+/// Where the Outliner draws its border relative to the detected contour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BorderPlacement {
+    /// Outside the contour (on the background side).
+    Outside,
+    /// First pass paints one pixel inside the contour, then grows outward.
+    OneInward,
+    /// Grows both outward and inward.
+    Symmetric,
+}
+
 /// The operation chosen in the Flip/Rotate dialog.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FlipRotate {
@@ -2284,15 +2604,14 @@ fn snap_to_45(start: (i32, i32), p: (i32, i32)) -> (i32, i32) {
 
 /// Builds a selection from a freshly created region.
 fn selection_from_region(region: NewRegion) -> Selection {
+    let width = region.pixels.width();
+    let height = region.pixels.height();
     let boundary = if region.mask {
-        rspaint_core::selection::boundary_segments(
-            &region.mask_bits,
-            region.pixels.width(),
-            region.pixels.height(),
-        )
+        rspaint_core::selection::boundary_segments(&region.mask_bits, width, height)
     } else {
         Vec::new()
     };
+    let runs = runs_from_mask(&region.mask_bits, width, height);
     Selection {
         pixels: region.pixels,
         x: region.x,
@@ -2301,6 +2620,7 @@ fn selection_from_region(region: NewRegion) -> Selection {
         mask: region.mask,
         boundary,
         mask_bits: region.mask_bits,
+        runs,
         floating: false,
         dragging: false,
         moved: false,
@@ -2308,6 +2628,33 @@ fn selection_from_region(region: NewRegion) -> Selection {
         base: None,
         name: region.name,
     }
+}
+
+/// Horizontal runs `(y, x_start, x_end)` of a mask (inclusive `x_end`).
+fn runs_from_mask(mask_bits: &[bool], width: u32, height: u32) -> Vec<HighlightRun> {
+    let mut runs = Vec::new();
+    let w = width as i32;
+    for y in 0..height as i32 {
+        let mut x = 0;
+        while x < w {
+            let idx = (y as u32 * width + x as u32) as usize;
+            if mask_bits.get(idx).copied().unwrap_or(false) {
+                let start = x;
+                while x < w
+                    && mask_bits
+                        .get((y as u32 * width + x as u32) as usize)
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    x += 1;
+                }
+                runs.push((y, start, x - 1));
+            } else {
+                x += 1;
+            }
+        }
+    }
+    runs
 }
 
 /// Clears the pixels where `mask_bits` is true, at `(x, y)`.
@@ -2404,6 +2751,7 @@ fn subtract_region(previous: Selection, region: &NewRegion) -> Option<Selection>
         return None;
     }
     let boundary = rspaint_core::selection::boundary_segments(&mask, aw, ah);
+    let runs = runs_from_mask(&mask, aw, ah);
     Some(Selection {
         pixels: content,
         x: ax,
@@ -2412,6 +2760,7 @@ fn subtract_region(previous: Selection, region: &NewRegion) -> Option<Selection>
         mask: true,
         boundary,
         mask_bits: mask,
+        runs,
         floating: previous.floating,
         dragging: false,
         moved: previous.moved,
@@ -2515,6 +2864,7 @@ fn union_region(previous: Selection, region: NewRegion, fill: Color) -> Selectio
     };
 
     let boundary = rspaint_core::selection::boundary_segments(&merged_mask, width, height);
+    let runs = runs_from_mask(&merged_mask, width, height);
     Selection {
         pixels: merged,
         x: min_x,
@@ -2523,6 +2873,7 @@ fn union_region(previous: Selection, region: NewRegion, fill: Color) -> Selectio
         mask: true,
         boundary,
         mask_bits: merged_mask,
+        runs,
         floating,
         dragging: false,
         moved: previous.moved,

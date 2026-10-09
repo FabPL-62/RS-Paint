@@ -22,11 +22,19 @@ struct Uniforms {
     flags: vec4<f32>,
     // uv min_x, min_y, size_x, size_y of the visible sub-rectangle
     uv_rect: vec4<f32>,
+    // grid_opacity, (reserved)
+    params: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var tex: texture_2d<f32>;
+
+// Transparency checkerboard shades and their representative luma (used by the
+// pixel grid so its color stays consistent across the checker cells).
+const CHECKER_LIGHT: f32 = 0.45;
+const CHECKER_DARK: f32 = 0.30;
+const CHECKER_LUMA: f32 = 0.375;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -105,21 +113,30 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let cell = floor(in.pos.xy / checker_px);
         let parity = fract((cell.x + cell.y) * 0.5) * 2.0;
         // Dark enough that the pixel grid (a light line over dark) is visible.
-        let checker = mix(0.45, 0.30, parity);
+        let checker = mix(CHECKER_LIGHT, CHECKER_DARK, parity);
         color = mix(vec3<f32>(checker), texel.rgb, texel.a);
     }
 
     // Pixel grid, drawn once a canvas pixel is at least 8 screen px wide.
-    // It is composited on top of the strokes and picks a contrasting shade
-    // (dark over light pixels, light over dark pixels) so it always stays
-    // visible in front of whatever was drawn.
+    // The line contrasts with whatever is underneath: the pixel color, or the
+    // transparency checkerboard's representative shade where transparent (a
+    // single value, so the line does not flip between checker cells).
     if u.flags.y > 0.5 {
         let f = fract(canvas_px);
         let d = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)) * magnification;
         let g = 1.0 - smoothstep(0.0, 1.0, d);
-        let luma = dot(color, vec3<f32>(0.299, 0.587, 0.114));
-        let line = select(vec3<f32>(0.9), vec3<f32>(0.6), luma > 0.5);
-        color = mix(color, line, g * 0.4);
+
+        let pixel_luma = dot(texel.rgb, vec3<f32>(0.299, 0.587, 0.114));
+        let luma = mix(CHECKER_LUMA, pixel_luma, texel.a);
+
+        // light background -> gray line, mid-gray -> dark line, dark -> light line
+        var line = vec3<f32>(0.9);
+        if luma > 0.75 {
+            line = vec3<f32>(0.5);
+        } else if luma > 0.3 {
+            line = vec3<f32>(0.1);
+        }
+        color = mix(color, line, g * u.params.x);
     }
 
     // Tool cursor: the exact brush footprint (pixel-aligned, matching the
@@ -168,6 +185,7 @@ pub struct Uniforms {
     pub cursor: [f32; 4],
     pub flags: [f32; 4],
     pub uv_rect: [f32; 4],
+    pub params: [f32; 4],
 }
 
 /// A pending region of the document to upload to the GPU texture.

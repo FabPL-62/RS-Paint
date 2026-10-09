@@ -314,6 +314,27 @@ fn paint_selection_overlay(
     let painter = ui.painter();
     let mut drew = false;
 
+    // Translucent highlight over the selected area.
+    if let Some(runs) = app.selection_brush_runs() {
+        paint_selection_highlight(
+            painter,
+            ui.clip_rect(),
+            canvas_rect,
+            magnification,
+            runs,
+            (0, 0),
+        );
+    } else if let Some((runs, origin)) = app.selection_runs() {
+        paint_selection_highlight(
+            painter,
+            ui.clip_rect(),
+            canvas_rect,
+            magnification,
+            runs,
+            origin,
+        );
+    }
+
     if let Some(segments) = app.selection_brush_boundary() {
         // While painting a Selection Brush stroke, show only its outline
         // (static); the existing selection's animated outline is suppressed so
@@ -391,6 +412,34 @@ fn paint_mask_boundary(
     };
     for &(start, end) in segments {
         paint_ant_segment(painter, to_screen(start), to_screen(end), phase);
+    }
+}
+
+/// Draws a translucent white highlight over the selected area (horizontal runs).
+fn paint_selection_highlight(
+    painter: &egui::Painter,
+    clip: egui::Rect,
+    canvas_rect: egui::Rect,
+    magnification: f32,
+    runs: &[(i32, i32, i32)],
+    (ox, oy): (i32, i32),
+) {
+    let visible = canvas_rect.intersect(clip);
+    if visible.width() <= 0.0 || visible.height() <= 0.0 {
+        return;
+    }
+    let fill = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60);
+    for &(y, x0, x1) in runs {
+        let min = canvas_rect.min
+            + egui::vec2(
+                (ox + x0) as f32 * magnification,
+                (oy + y) as f32 * magnification,
+            );
+        let max = min + egui::vec2((x1 - x0 + 1) as f32 * magnification, magnification);
+        let rect = egui::Rect::from_min_max(min, max).intersect(visible);
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            painter.rect_filled(rect, 0.0, fill);
+        }
     }
 }
 
