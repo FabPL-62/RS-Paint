@@ -41,8 +41,13 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
 fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
     match app.tool {
         Tool::Pencil => size_row(ui, "Size", &mut app.pencil_size, 1..=50),
-        Tool::Brush | Tool::SelectionBrush => {
-            shape_row(ui, &mut app.brush_shape);
+        Tool::Brush => {
+            shape_row(ui, &mut app.brush_shape, true);
+            size_row(ui, "Size", &mut app.brush_size, 1..=500);
+        }
+        Tool::SelectionBrush => {
+            // Diagonal brush shapes don't make sense for painting a selection.
+            shape_row(ui, &mut app.brush_shape, false);
             size_row(ui, "Size", &mut app.brush_size, 1..=500);
         }
         Tool::Eraser => size_row(ui, "Size", &mut app.eraser_size, 1..=500),
@@ -89,11 +94,13 @@ fn size_row(ui: &mut egui::Ui, label: &str, value: &mut u32, range: std::ops::Ra
     });
 }
 
-fn shape_row(ui: &mut egui::Ui, shape: &mut BrushShape) {
+fn shape_row(ui: &mut egui::Ui, shape: &mut BrushShape, allow_diagonal: bool) {
     ui.vertical(|ui| {
         ui.radio_value(shape, BrushShape::Circle, "Circle");
         ui.radio_value(shape, BrushShape::Square, "Square");
-        ui.radio_value(shape, BrushShape::Diagonal, "Diagonal \\");
-        ui.radio_value(shape, BrushShape::ReverseDiagonal, "Diagonal /");
+        if allow_diagonal {
+            ui.radio_value(shape, BrushShape::Diagonal, "Diagonal \\");
+            ui.radio_value(shape, BrushShape::ReverseDiagonal, "Diagonal /");
+        }
     });
 }

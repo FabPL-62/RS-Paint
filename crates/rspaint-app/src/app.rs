@@ -501,6 +501,15 @@ impl PaintApp {
         if !tool.is_selection() {
             self.deselect();
         }
+        // Diagonal brush shapes only apply to the Brush tool.
+        if tool == Tool::SelectionBrush
+            && matches!(
+                self.brush_shape,
+                BrushShape::Diagonal | BrushShape::ReverseDiagonal
+            )
+        {
+            self.brush_shape = BrushShape::Circle;
+        }
         self.tool = tool;
     }
 
