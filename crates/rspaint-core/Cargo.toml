@@ -1,0 +1,10 @@
+[package]
+name = "rspaint-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png", "bmp", "jpeg", "gif", "tiff"] }

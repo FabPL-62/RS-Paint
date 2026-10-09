@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rspaint-core",
+    "crates/rspaint-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/1j01/jspaint"
+authors = ["RS Paint contributors"]
+
+[workspace.dependencies]
+rspaint-core = { path = "crates/rspaint-core" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
