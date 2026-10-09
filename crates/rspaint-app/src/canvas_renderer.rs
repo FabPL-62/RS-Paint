@@ -104,7 +104,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if u.flags.x > 0.5 {
         let cell = floor(in.pos.xy / checker_px);
         let parity = fract((cell.x + cell.y) * 0.5) * 2.0;
-        let checker = mix(0.78, 0.60, parity);
+        // Dark enough that the pixel grid (a light line over dark) is visible.
+        let checker = mix(0.45, 0.30, parity);
         color = mix(vec3<f32>(checker), texel.rgb, texel.a);
     }
 
