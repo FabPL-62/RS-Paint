@@ -2887,14 +2887,31 @@ impl PaintApp {
                     event,
                     egui::Event::Key { pressed: true, .. }
                         | egui::Event::PointerButton { pressed: true, .. }
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                        | egui::Event::Paste(_)
                         | egui::Event::MouseWheel { .. }
                         | egui::Event::Zoom(_)
+                )
+            });
+            // egui-winit swallows the Ctrl+C/V press (emitting
+            // `Event::Copy`/`Event::Paste` instead), so copy/paste are detected
+            // on key release, which is always delivered.
+            let copy_cmd = i
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Copy));
+            let paste_cmd = i.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key { key: Key::V, pressed: false, modifiers, .. }
+                        if modifiers.command
                 )
             });
             if command && !self.ctrl_down {
                 self.ctrl_tap_used = false;
             }
-            if command && combined {
+            if command && (combined || paste_cmd) {
                 self.ctrl_tap_used = true;
             }
             if !command && self.ctrl_down && !self.ctrl_tap_used {
@@ -2927,9 +2944,9 @@ impl PaintApp {
                 self.show_flip_rotate = true;
             } else if i.consume_key(Modifiers::CTRL, Key::W) {
                 self.show_stretch_skew = true;
-            } else if i.consume_key(Modifiers::CTRL, Key::C) {
+            } else if copy_cmd {
                 self.copy_selection();
-            } else if i.consume_key(Modifiers::CTRL, Key::V) {
+            } else if paste_cmd {
                 self.paste_clipboard();
             } else if i.consume_key(Modifiers::NONE, Key::Delete)
                 || i.consume_key(Modifiers::NONE, Key::Backspace)

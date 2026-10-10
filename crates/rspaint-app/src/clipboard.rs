@@ -49,3 +49,24 @@ pub fn read_image() -> Option<PixelBuffer> {
     }
     Some(buffer)
 }
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+    use rspaint_core::color::Color;
+
+    #[test]
+    fn clipboard_round_trip() {
+        let mut b = PixelBuffer::transparent(4, 3);
+        b.set(0, 0, Color::rgb(255, 0, 0));
+        b.set(1, 0, Color::rgb(0, 255, 0));
+        b.set(2, 1, Color::rgb(0, 0, 255));
+        write_image(&b);
+        let read = read_image();
+        assert!(read.is_some(), "expected an image back");
+        let read = read.unwrap();
+        assert_eq!((read.width(), read.height()), (4, 3), "size mismatch");
+        assert_eq!(read.get(0, 0), Some(Color::rgb(255, 0, 0)), "pixel (0,0)");
+        assert_eq!(read.get(1, 0), Some(Color::rgb(0, 255, 0)), "pixel (1,0)");
+        assert_eq!(read.get(2, 1), Some(Color::rgb(0, 0, 255)), "pixel (2,1)");
+    }
+}
