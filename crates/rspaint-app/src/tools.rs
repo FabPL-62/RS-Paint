@@ -118,6 +118,24 @@ impl Tool {
         matches!(self, Tool::Fill | Tool::PickColor | Tool::Magnifier)
     }
 
+    /// Drawing tools that allow a temporary color-pick with Ctrl/Alt.
+    pub fn allows_color_pick(self) -> bool {
+        matches!(
+            self,
+            Tool::Pencil
+                | Tool::Brush
+                | Tool::Fill
+                | Tool::Airbrush
+                | Tool::Text
+                | Tool::Line
+                | Tool::Curve
+                | Tool::Rectangle
+                | Tool::Polygon
+                | Tool::Ellipse
+                | Tool::RoundedRectangle
+        )
+    }
+
     /// Selection tools (the Outliner also defines a rectangular selection).
     pub fn is_selection(self) -> bool {
         matches!(

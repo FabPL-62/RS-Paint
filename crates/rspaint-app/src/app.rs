@@ -221,6 +221,13 @@ pub struct ColorPicker {
     pub just_opened: bool,
 }
 
+/// Which active color a temporary Ctrl/Alt color-pick writes to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PickTarget {
+    Primary,
+    Secondary,
+}
+
 /// The choice made in the close-confirmation dialog.
 #[derive(Clone, Copy)]
 enum Action {
@@ -377,6 +384,8 @@ pub struct PaintApp {
     show_close_confirm: bool,
     /// Set once the user confirmed closing, to bypass the confirmation.
     force_close: bool,
+    /// Active temporary color-pick (Ctrl = primary, Alt = secondary).
+    pick_hold: Option<PickTarget>,
     /// Whether the Attributes dialog is open.
     pub show_attributes: bool,
     /// Attributes dialog: canvas width.
@@ -496,6 +505,7 @@ impl PaintApp {
             show_about: false,
             show_close_confirm: false,
             force_close: false,
+            pick_hold: None,
             show_attributes: false,
             attributes_width: rspaint_core::document::DEFAULT_CANVAS_WIDTH,
             attributes_height: rspaint_core::document::DEFAULT_CANVAS_HEIGHT,
@@ -519,6 +529,10 @@ impl PaintApp {
 
     /// The size of the active tool's cursor in image pixels.
     pub fn cursor_size(&self) -> u32 {
+        // A temporary color-pick uses a single-pixel cursor.
+        if self.pick_hold.is_some() {
+            return 1;
+        }
         match self.tool {
             Tool::Pencil => self.pencil_size,
             Tool::Brush | Tool::SelectionBrush => self.brush_size,
@@ -535,6 +549,9 @@ impl PaintApp {
     /// The shader code for the active tool's cursor footprint shape:
     /// 0 = square, 1 = circle, 2 = diagonal `\`, 3 = reverse diagonal `/`.
     fn cursor_shape_code(&self) -> f32 {
+        if self.pick_hold.is_some() {
+            return 0.0;
+        }
         let code = match self.tool {
             Tool::Airbrush => 1,
             Tool::Brush | Tool::SelectionBrush => match self.brush_shape {
@@ -2510,6 +2527,41 @@ impl PaintApp {
         }
     }
 
+    /// Updates the temporary color-pick state from the modifier keys.
+    ///
+    /// While a drawing tool is active, Ctrl picks the primary color and Alt
+    /// picks the secondary; releasing restores the tool.
+    fn update_pick_hold(&mut self, ctx: &egui::Context) {
+        let (ctrl, alt) = ctx.input(|i| (i.modifiers.command, i.modifiers.alt));
+        self.pick_hold = if !self.tool.allows_color_pick() {
+            None
+        } else if alt {
+            Some(PickTarget::Secondary)
+        } else if ctrl {
+            Some(PickTarget::Primary)
+        } else {
+            None
+        };
+    }
+
+    /// The active temporary color-pick, if any.
+    pub fn pick_hold(&self) -> Option<PickTarget> {
+        self.pick_hold
+    }
+
+    /// Picks the color under `p` into the given active color.
+    pub fn pick_color_at(&mut self, p: (i32, i32), target: PickTarget) {
+        if p.0 < 0 || p.1 < 0 {
+            return;
+        }
+        if let Some(color) = self.document.buffer.get(p.0 as u32, p.1 as u32) {
+            match target {
+                PickTarget::Primary => self.foreground = color,
+                PickTarget::Secondary => self.background = color,
+            }
+        }
+    }
+
     /// Handles a click for click-based tools (Fill, Pick Color, Magnifier).
     pub fn click_tool(&mut self, p: (i32, i32), button: PointerButton, shift: bool) {
         match self.tool {
@@ -2588,6 +2640,7 @@ impl PaintApp {
                 matches!(
                     event,
                     egui::Event::Key { pressed: true, .. }
+                        | egui::Event::PointerButton { pressed: true, .. }
                         | egui::Event::MouseWheel { .. }
                         | egui::Event::Zoom(_)
                 )
@@ -2843,6 +2896,7 @@ impl eframe::App for PaintApp {
         }
 
         self.handle_shortcuts(ctx);
+        self.update_pick_hold(ctx);
         self.update_title(ctx);
 
         ui::menubar::show(self, ctx);

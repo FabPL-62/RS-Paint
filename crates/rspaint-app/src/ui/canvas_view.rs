@@ -13,7 +13,9 @@ use eframe::egui;
 use eframe::egui_wgpu;
 use egui::{PointerButton, Pos2, Vec2};
 
-use crate::app::{to_color32, PaintApp, SelectionOutline, MAX_MAGNIFICATION, MIN_MAGNIFICATION};
+use crate::app::{
+    to_color32, PaintApp, PickTarget, SelectionOutline, MAX_MAGNIFICATION, MIN_MAGNIFICATION,
+};
 use crate::canvas_renderer::CanvasCallback;
 use crate::tools::Tool;
 
@@ -55,7 +57,9 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     });
     app.set_pointer(pointer);
 
-    if app.tool == Tool::MagicWand {
+    if let Some(target) = app.pick_hold() {
+        handle_pick(app, &response, canvas_rect, &to_canvas, target);
+    } else if app.tool == Tool::MagicWand {
         handle_magic_wand(app, ui, &response, canvas_rect, &to_canvas);
     } else if app.tool == Tool::SelectionBrush {
         handle_selection_brush(app, ui, &response, canvas_rect, &to_canvas);
@@ -85,6 +89,25 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     paint_selection_overlay(app, ui, canvas_rect, magnification);
     paint_polygon_overlay(app, ui, canvas_rect, magnification);
     paint_text_overlay(app, ui, canvas_rect, magnification);
+}
+
+/// Handles the temporary Ctrl/Alt color-pick while a drawing tool is active.
+fn handle_pick(
+    app: &mut PaintApp,
+    response: &egui::Response,
+    canvas_rect: egui::Rect,
+    to_canvas: &impl Fn(Pos2) -> (i32, i32),
+    target: PickTarget,
+) {
+    if (response.clicked() || response.dragged())
+        && response
+            .interact_pointer_pos()
+            .is_some_and(|pos| canvas_rect.contains(pos))
+    {
+        if let Some(pos) = response.interact_pointer_pos() {
+            app.pick_color_at(to_canvas(pos), target);
+        }
+    }
 }
 
 fn handle_polygon(
