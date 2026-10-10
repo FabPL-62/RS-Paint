@@ -133,6 +133,15 @@ pub struct Selection {
     name: &'static str,
 }
 
+/// Content copied to the internal clipboard for pasting.
+#[derive(Clone)]
+struct ClipboardContent {
+    pixels: PixelBuffer,
+    mask_bits: Vec<bool>,
+    outline: Vec<(i32, i32)>,
+    mask: bool,
+}
+
 /// A freshly created selection region before it is finalized.
 struct NewRegion {
     pixels: PixelBuffer,
@@ -296,6 +305,8 @@ pub struct PaintApp {
     creating_selection_subtract: bool,
     /// Undo stack of selection states (selection + canvas) for selection ops.
     selection_undo: Vec<(Option<Selection>, PixelBuffer)>,
+    /// Content copied with Ctrl+C for pasting.
+    clipboard: Option<ClipboardContent>,
     /// Committed vertices of the in-progress Polygon.
     polygon_points: Vec<(i32, i32)>,
     /// The cursor position previewed as the next Polygon vertex.
@@ -463,6 +474,7 @@ impl PaintApp {
             creating_selection_add: false,
             creating_selection_subtract: false,
             selection_undo: Vec::new(),
+            clipboard: None,
             polygon_points: Vec::new(),
             polygon_preview: None,
             polygon_stroke: Color::BLACK,
@@ -1762,6 +1774,98 @@ impl PaintApp {
         self.selection_undo.clear();
     }
 
+    /// Copies the active selection (Ctrl+C) to the internal and system clipboards.
+    pub fn copy_selection(&mut self) {
+        let Some(selection) = self.selection.as_ref() else {
+            return;
+        };
+        self.clipboard = Some(ClipboardContent {
+            pixels: selection.pixels.clone(),
+            mask_bits: selection.mask_bits.clone(),
+            outline: selection.outline.clone(),
+            mask: selection.mask,
+        });
+        crate::clipboard::write_image(&selection.pixels);
+    }
+
+    /// Pastes the clipboard as a floating selection (Ctrl+V).
+    ///
+    /// Prefers an image from the system clipboard; otherwise uses the last
+    /// in-app copy. The pasted content stays a floating selection until the
+    /// user clicks outside it.
+    pub fn paste_clipboard(&mut self) {
+        self.deselect();
+
+        let content = match crate::clipboard::read_image() {
+            Some(pixels) => {
+                let count = (pixels.width() * pixels.height()) as usize;
+                (pixels, vec![true; count], Vec::new(), false)
+            }
+            None => match self.clipboard.clone() {
+                Some(content) => (
+                    content.pixels,
+                    content.mask_bits,
+                    content.outline,
+                    content.mask,
+                ),
+                None => return,
+            },
+        };
+        let (pixels, mut mask_bits, outline, mask) = content;
+        let width = pixels.width();
+        let height = pixels.height();
+        if width == 0 || height == 0 {
+            return;
+        }
+        if mask_bits.len() != (width * height) as usize {
+            mask_bits = vec![true; (width * height) as usize];
+        }
+        let boundary = if mask {
+            rspaint_core::selection::boundary_segments(&mask_bits, width, height)
+        } else {
+            Vec::new()
+        };
+        let runs = runs_from_mask(&mask_bits, width, height);
+
+        // Paste centered on the pointer (or the canvas center), as a floating
+        // selection over the canvas.
+        let (px, py) = self.pointer.unwrap_or((
+            self.document.width() as i32 / 2,
+            self.document.height() as i32 / 2,
+        ));
+        // Keep the whole pasted image inside the canvas.
+        let max_x = (self.document.width() as i32 - width as i32).max(0);
+        let max_y = (self.document.height() as i32 - height as i32).max(0);
+        let x = (px - width as i32 / 2).clamp(0, max_x);
+        let y = (py - height as i32 / 2).clamp(0, max_y);
+        let background = if self.selection_transparent {
+            Some(self.background)
+        } else {
+            None
+        };
+        let base = self.document.buffer.clone();
+        rspaint_core::selection::stamp(&mut self.document.buffer, &pixels, x, y, background);
+
+        self.set_tool(Tool::Select);
+        self.selection = Some(Selection {
+            pixels,
+            x,
+            y,
+            outline,
+            mask,
+            boundary,
+            mask_bits,
+            runs,
+            floating: true,
+            dragging: false,
+            moved: true,
+            drag_offset: (0, 0),
+            base: Some(base),
+            name: "Paste",
+        });
+        self.mark_full();
+    }
+
     /// Deletes the selected pixels (filling with background or transparency).
     pub fn delete_selection(&mut self) {
         if self.selection.is_none() {
@@ -2691,6 +2795,10 @@ impl PaintApp {
                 self.show_flip_rotate = true;
             } else if i.consume_key(Modifiers::CTRL, Key::W) {
                 self.show_stretch_skew = true;
+            } else if i.consume_key(Modifiers::CTRL, Key::C) {
+                self.copy_selection();
+            } else if i.consume_key(Modifiers::CTRL, Key::V) {
+                self.paste_clipboard();
             } else if i.consume_key(Modifiers::NONE, Key::Delete)
                 || i.consume_key(Modifiers::NONE, Key::Backspace)
             {

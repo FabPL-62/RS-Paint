@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 ab_glyph = "0.2.32"
+arboard = "3.6.1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 eframe = { version = "0.33.3", features = ["wgpu"] }
 egui = "0.33.3"
