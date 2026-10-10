@@ -144,6 +144,33 @@ impl PixelBuffer {
         out
     }
 
+    /// Returns a resized copy with the old content placed at `(offset_x, offset_y)`.
+    ///
+    /// Used by the canvas resize handles to keep the content anchored to the
+    /// edge opposite the dragged one.
+    pub fn resized_with_offset(
+        &self,
+        width: u32,
+        height: u32,
+        offset_x: i32,
+        offset_y: i32,
+        fill: Color,
+    ) -> Self {
+        let mut out = Self::new(width, height, fill);
+        for y in 0..self.height() {
+            for x in 0..self.width() {
+                let dx = x as i32 + offset_x;
+                let dy = y as i32 + offset_y;
+                if dx >= 0 && dy >= 0 && (dx as u32) < width && (dy as u32) < height {
+                    if let Some(color) = self.get(x, y) {
+                        out.set(dx as u32, dy as u32, color);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Fills the whole buffer with a single color.
     pub fn fill(&mut self, color: Color) {
         let color = color.to_array();
@@ -184,6 +211,22 @@ mod tests {
         buffer.set(1, 2, Color::rgb(10, 20, 30));
         assert_eq!(buffer.get(1, 2), Some(Color::rgb(10, 20, 30)));
         assert_eq!(buffer.get(0, 0), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn resized_with_offset_anchors_content() {
+        let mut buffer = PixelBuffer::new(2, 2, Color::WHITE);
+        buffer.set(0, 0, Color::BLACK);
+        // Grow to the top-left: the content shifts down-right.
+        let grown = buffer.resized_with_offset(4, 4, 2, 2, Color::WHITE);
+        assert_eq!(grown.get(2, 2), Some(Color::BLACK));
+        assert_eq!(grown.get(0, 0), Some(Color::WHITE));
+        // Shrink from the top-left keeps the bottom-right part.
+        let mut bottom_right = PixelBuffer::new(2, 2, Color::WHITE);
+        bottom_right.set(1, 1, Color::BLACK);
+        let shrunk = bottom_right.resized_with_offset(1, 1, -1, -1, Color::WHITE);
+        assert_eq!(shrunk.size(), [1, 1]);
+        assert_eq!(shrunk.get(0, 0), Some(Color::BLACK));
     }
 
     #[test]

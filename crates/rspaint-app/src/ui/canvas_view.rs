@@ -14,7 +14,8 @@ use eframe::egui_wgpu;
 use egui::{PointerButton, Pos2, Vec2};
 
 use crate::app::{
-    to_color32, PaintApp, PickTarget, SelectionOutline, MAX_MAGNIFICATION, MIN_MAGNIFICATION,
+    to_color32, PaintApp, PickTarget, ResizeHandle, SelectionOutline, MAX_MAGNIFICATION,
+    MIN_MAGNIFICATION,
 };
 use crate::canvas_renderer::CanvasCallback;
 use crate::tools::Tool;
@@ -41,13 +42,18 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
 
     // Over the visible canvas (the paper, clipped to the viewport) hide the OS
     // pointer and draw the tool's own cursor image instead. Over the gray area
-    // outside the paper the system pointer stays visible.
+    // outside the paper the system pointer stays visible. Near a resize handle
+    // the system cursor shows the matching resize icon.
     let visible_canvas = canvas_rect.intersect(viewport_rect);
     let cursor_pos = ui.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.interact_pos()));
+    let hovered_handle = cursor_pos.and_then(|pos| hovered_resize_handle(canvas_rect, pos));
     let over_canvas = cursor_pos.is_some_and(|pos| visible_canvas.contains(pos));
-    if over_canvas {
+    if let Some(handle) = hovered_handle {
+        ui.ctx().set_cursor_icon(handle_cursor(handle));
+    } else if over_canvas {
         ui.ctx().set_cursor_icon(egui::CursorIcon::None);
     }
+    let custom_cursor = over_canvas && hovered_handle.is_none();
 
     let to_canvas = |pos: Pos2| -> (i32, i32) {
         (
@@ -67,7 +73,17 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     });
     app.set_pointer(pointer);
 
-    if let Some(target) = app.pick_hold() {
+    let resizing = handle_canvas_resize(
+        app,
+        ui,
+        &response,
+        canvas_rect,
+        viewport_rect,
+        magnification,
+    );
+    if resizing {
+        // The resize owns the input this frame.
+    } else if let Some(target) = app.pick_hold() {
         handle_pick(app, &response, canvas_rect, &to_canvas, target);
     } else if app.tool == Tool::MagicWand {
         handle_magic_wand(app, ui, &response, canvas_rect, &to_canvas);
@@ -100,12 +116,163 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     paint_polygon_overlay(app, ui, canvas_rect, magnification);
     paint_text_overlay(app, ui, canvas_rect, magnification);
 
+    // Resize handles appear near the border, while hovering one, or resizing.
+    let near_border = cursor_pos.is_some_and(|pos| {
+        canvas_rect.expand(HANDLE_MARGIN).contains(pos)
+            && !canvas_rect.shrink(HANDLE_MARGIN).contains(pos)
+    });
+    if hovered_handle.is_some() || app.resizing_canvas() || near_border {
+        paint_resize_handles(ui.painter(), canvas_rect, hovered_handle);
+    }
+
     // Draw the custom tool cursor (the OS pointer is hidden over the canvas).
-    if over_canvas {
+    if custom_cursor {
         if let Some(pos) = cursor_pos {
             app.paint_cursor(ui.painter(), pos);
         }
     }
+}
+
+/// The size of a resize handle square, in points.
+const HANDLE_SIZE: f32 = 8.0;
+/// Extra hit area around a handle.
+const HANDLE_HIT: f32 = 4.0;
+/// How close to the border the handles appear.
+const HANDLE_MARGIN: f32 = 12.0;
+
+/// The screen rectangle of a resize handle (just outside the canvas border).
+fn resize_handle_rect(canvas_rect: egui::Rect, handle: ResizeHandle) -> egui::Rect {
+    let s = HANDLE_SIZE;
+    let cx = canvas_rect.center().x;
+    let cy = canvas_rect.center().y;
+    let (min_x, max_x, min_y, max_y) = match handle {
+        ResizeHandle::North => (
+            cx - s / 2.0,
+            cx + s / 2.0,
+            canvas_rect.min.y - s,
+            canvas_rect.min.y,
+        ),
+        ResizeHandle::South => (
+            cx - s / 2.0,
+            cx + s / 2.0,
+            canvas_rect.max.y,
+            canvas_rect.max.y + s,
+        ),
+        ResizeHandle::East => (
+            canvas_rect.max.x,
+            canvas_rect.max.x + s,
+            cy - s / 2.0,
+            cy + s / 2.0,
+        ),
+        ResizeHandle::West => (
+            canvas_rect.min.x - s,
+            canvas_rect.min.x,
+            cy - s / 2.0,
+            cy + s / 2.0,
+        ),
+        ResizeHandle::NorthWest => (
+            canvas_rect.min.x - s,
+            canvas_rect.min.x,
+            canvas_rect.min.y - s,
+            canvas_rect.min.y,
+        ),
+        ResizeHandle::NorthEast => (
+            canvas_rect.max.x,
+            canvas_rect.max.x + s,
+            canvas_rect.min.y - s,
+            canvas_rect.min.y,
+        ),
+        ResizeHandle::SouthWest => (
+            canvas_rect.min.x - s,
+            canvas_rect.min.x,
+            canvas_rect.max.y,
+            canvas_rect.max.y + s,
+        ),
+        ResizeHandle::SouthEast => (
+            canvas_rect.max.x,
+            canvas_rect.max.x + s,
+            canvas_rect.max.y,
+            canvas_rect.max.y + s,
+        ),
+    };
+    egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y))
+}
+
+/// The handle under `pointer`, if any.
+fn hovered_resize_handle(canvas_rect: egui::Rect, pointer: egui::Pos2) -> Option<ResizeHandle> {
+    ResizeHandle::ALL.into_iter().find(|&handle| {
+        resize_handle_rect(canvas_rect, handle)
+            .expand(HANDLE_HIT)
+            .contains(pointer)
+    })
+}
+
+/// The resize cursor for a handle.
+fn handle_cursor(handle: ResizeHandle) -> egui::CursorIcon {
+    match handle {
+        ResizeHandle::East | ResizeHandle::West => egui::CursorIcon::ResizeHorizontal,
+        ResizeHandle::North | ResizeHandle::South => egui::CursorIcon::ResizeVertical,
+        ResizeHandle::NorthWest | ResizeHandle::SouthEast => egui::CursorIcon::ResizeNwSe,
+        ResizeHandle::NorthEast | ResizeHandle::SouthWest => egui::CursorIcon::ResizeNeSw,
+    }
+}
+
+/// Draws the light-blue border and the resize handle squares.
+fn paint_resize_handles(
+    painter: &egui::Painter,
+    canvas_rect: egui::Rect,
+    hovered: Option<ResizeHandle>,
+) {
+    let blue = egui::Color32::from_rgb(120, 180, 240);
+    let active = egui::Color32::from_rgb(70, 140, 230);
+    painter.rect_stroke(
+        canvas_rect,
+        0.0,
+        egui::Stroke::new(1.5, blue),
+        egui::StrokeKind::Outside,
+    );
+    for handle in ResizeHandle::ALL {
+        let rect = resize_handle_rect(canvas_rect, handle);
+        let color = if Some(handle) == hovered {
+            active
+        } else {
+            blue
+        };
+        painter.rect_filled(rect, 0.0, color);
+    }
+}
+
+/// Handles a canvas resize drag; returns whether it consumed the input.
+fn handle_canvas_resize(
+    app: &mut PaintApp,
+    ui: &egui::Ui,
+    response: &egui::Response,
+    canvas_rect: egui::Rect,
+    viewport_rect: egui::Rect,
+    magnification: f32,
+) -> bool {
+    if app.resizing_canvas() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            app.update_canvas_resize(pos, viewport_rect.min);
+        }
+        if response.drag_stopped() {
+            app.finish_canvas_resize();
+        }
+        return true;
+    }
+    if response.drag_started() {
+        let origin = ui
+            .input(|i| i.pointer.press_origin())
+            .or(response.interact_pointer_pos());
+        if let Some(handle) = origin.and_then(|pos| hovered_resize_handle(canvas_rect, pos)) {
+            app.begin_canvas_resize(handle, canvas_rect.min, magnification);
+            if let Some(pos) = origin {
+                app.update_canvas_resize(pos, viewport_rect.min);
+            }
+            return true;
+        }
+    }
+    false
 }
 
 /// Handles the temporary Ctrl/Alt color-pick while a drawing tool is active.

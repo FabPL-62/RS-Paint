@@ -133,6 +133,57 @@ pub struct Selection {
     name: &'static str,
 }
 
+/// A canvas edge/corner resize handle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ResizeHandle {
+    North,
+    South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
+    SouthEast,
+    SouthWest,
+}
+
+impl ResizeHandle {
+    /// All handles, in a stable order.
+    pub const ALL: [ResizeHandle; 8] = [
+        ResizeHandle::North,
+        ResizeHandle::South,
+        ResizeHandle::East,
+        ResizeHandle::West,
+        ResizeHandle::NorthEast,
+        ResizeHandle::NorthWest,
+        ResizeHandle::SouthEast,
+        ResizeHandle::SouthWest,
+    ];
+
+    fn touches_east(self) -> bool {
+        matches!(self, Self::East | Self::NorthEast | Self::SouthEast)
+    }
+    fn touches_west(self) -> bool {
+        matches!(self, Self::West | Self::NorthWest | Self::SouthWest)
+    }
+    fn touches_north(self) -> bool {
+        matches!(self, Self::North | Self::NorthWest | Self::NorthEast)
+    }
+    fn touches_south(self) -> bool {
+        matches!(self, Self::South | Self::SouthWest | Self::SouthEast)
+    }
+}
+
+/// An in-progress canvas resize drag.
+struct ResizeDrag {
+    handle: ResizeHandle,
+    orig_buffer: PixelBuffer,
+    orig_width: u32,
+    orig_height: u32,
+    /// The canvas rectangle's top-left at the start of the drag (screen space).
+    start_min: egui::Pos2,
+    magnification: f32,
+}
+
 /// Content copied to the internal clipboard for pasting.
 #[derive(Clone)]
 struct ClipboardContent {
@@ -307,6 +358,8 @@ pub struct PaintApp {
     selection_undo: Vec<(Option<Selection>, PixelBuffer)>,
     /// Content copied with Ctrl+C for pasting.
     clipboard: Option<ClipboardContent>,
+    /// The in-progress canvas resize, if any.
+    resize_drag: Option<ResizeDrag>,
     /// Committed vertices of the in-progress Polygon.
     polygon_points: Vec<(i32, i32)>,
     /// The cursor position previewed as the next Polygon vertex.
@@ -475,6 +528,7 @@ impl PaintApp {
             creating_selection_subtract: false,
             selection_undo: Vec::new(),
             clipboard: None,
+            resize_drag: None,
             polygon_points: Vec::new(),
             polygon_preview: None,
             polygon_stroke: Color::BLACK,
@@ -1864,6 +1918,84 @@ impl PaintApp {
             name: "Paste",
         });
         self.mark_full();
+    }
+
+    /// Whether a canvas resize drag is in progress.
+    pub fn resizing_canvas(&self) -> bool {
+        self.resize_drag.is_some()
+    }
+
+    /// Begins a canvas resize drag from `handle`.
+    pub fn begin_canvas_resize(
+        &mut self,
+        handle: ResizeHandle,
+        start_min: egui::Pos2,
+        magnification: f32,
+    ) {
+        self.resize_drag = Some(ResizeDrag {
+            handle,
+            orig_buffer: self.document.buffer.clone(),
+            orig_width: self.document.width(),
+            orig_height: self.document.height(),
+            start_min,
+            magnification,
+        });
+    }
+
+    /// Updates the canvas size during a resize drag, anchored to the opposite edge.
+    pub fn update_canvas_resize(&mut self, pointer: egui::Pos2, viewport_min: egui::Pos2) {
+        let Some(drag) = self.resize_drag.take() else {
+            return;
+        };
+        let mag = drag.magnification;
+        let left = drag.start_min.x;
+        let right = drag.start_min.x + drag.orig_width as f32 * mag;
+        let top = drag.start_min.y;
+        let bottom = drag.start_min.y + drag.orig_height as f32 * mag;
+
+        let mut new_width = drag.orig_width;
+        let mut new_height = drag.orig_height;
+        let mut new_min_x = left;
+        let mut new_min_y = top;
+
+        if drag.handle.touches_east() {
+            new_width = ((pointer.x - left) / mag).round().clamp(1.0, 100_000.0) as u32;
+        } else if drag.handle.touches_west() {
+            new_width = ((right - pointer.x) / mag).round().clamp(1.0, 100_000.0) as u32;
+            new_min_x = right - new_width as f32 * mag;
+        }
+        if drag.handle.touches_south() {
+            new_height = ((pointer.y - top) / mag).round().clamp(1.0, 100_000.0) as u32;
+        } else if drag.handle.touches_north() {
+            new_height = ((bottom - pointer.y) / mag).round().clamp(1.0, 100_000.0) as u32;
+            new_min_y = bottom - new_height as f32 * mag;
+        }
+
+        let offset_x = if drag.handle.touches_west() {
+            new_width as i32 - drag.orig_width as i32
+        } else {
+            0
+        };
+        let offset_y = if drag.handle.touches_north() {
+            new_height as i32 - drag.orig_height as i32
+        } else {
+            0
+        };
+
+        let fill = self.background;
+        self.document.buffer = drag
+            .orig_buffer
+            .resized_with_offset(new_width, new_height, offset_x, offset_y, fill);
+        self.pan = egui::vec2(new_min_x - viewport_min.x, new_min_y - viewport_min.y);
+        self.mark_full();
+        self.resize_drag = Some(drag);
+    }
+
+    /// Finishes a canvas resize drag, recording it in history.
+    pub fn finish_canvas_resize(&mut self) {
+        if self.resize_drag.take().is_some() {
+            self.commit("Resize Canvas");
+        }
     }
 
     /// Deletes the selected pixels (filling with background or transparency).
