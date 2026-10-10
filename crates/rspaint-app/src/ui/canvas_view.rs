@@ -13,8 +13,9 @@ use eframe::egui;
 use eframe::egui_wgpu;
 use egui::{PointerButton, Pos2, Vec2};
 
-use crate::app::{PaintApp, SelectionOutline, MAX_MAGNIFICATION, MIN_MAGNIFICATION};
+use crate::app::{to_color32, PaintApp, SelectionOutline, MAX_MAGNIFICATION, MIN_MAGNIFICATION};
 use crate::canvas_renderer::CanvasCallback;
+use crate::text::FontFamily;
 use crate::tools::Tool;
 
 /// Draws the current document and routes pointer input to the active tool.
@@ -65,6 +66,8 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         handle_polygon(app, &response, canvas_rect, &to_canvas);
     } else if app.tool == Tool::Curve {
         handle_curve(app, ui, &response, canvas_rect, &to_canvas);
+    } else if app.tool == Tool::Text {
+        handle_text(app, ui, &response, canvas_rect, &to_canvas);
     } else {
         handle_drawing(app, ui, &response, canvas_rect, &to_canvas);
     }
@@ -82,6 +85,7 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
 
     paint_selection_overlay(app, ui, canvas_rect, magnification);
     paint_polygon_overlay(app, ui, canvas_rect, magnification);
+    paint_text_overlay(app, ui, canvas_rect, magnification);
 }
 
 fn handle_polygon(
@@ -151,6 +155,129 @@ fn handle_curve(
     if response.secondary_clicked() {
         app.curve_cancel();
     }
+}
+
+/// Handles the Text tool: drag to place a box, type, and click outside to commit.
+fn handle_text(
+    app: &mut PaintApp,
+    ui: &egui::Ui,
+    response: &egui::Response,
+    canvas_rect: egui::Rect,
+    to_canvas: &impl Fn(Pos2) -> (i32, i32),
+) {
+    let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
+
+    if app.has_text_box() {
+        // A click outside the box (the editor covers it) commits the text.
+        if response.clicked() || response.secondary_clicked() {
+            app.commit_text();
+        }
+        return;
+    }
+
+    if response.drag_started() {
+        let origin = ui
+            .input(|i| i.pointer.press_origin())
+            .or(response.interact_pointer_pos());
+        if let Some(pos) = origin {
+            if on_canvas(pos) {
+                app.begin_text_box(to_canvas(pos));
+            }
+        }
+    }
+    if response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            app.update_text_box(to_canvas(pos));
+        }
+    }
+    if response.drag_stopped() {
+        app.finish_text_box();
+    }
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if on_canvas(pos) {
+                app.default_text_box(to_canvas(pos));
+            }
+        }
+    }
+    if response.secondary_clicked() {
+        app.cancel_text();
+    }
+}
+
+/// Draws the text box being created and hosts the editor for the active box.
+fn paint_text_overlay(
+    app: &mut PaintApp,
+    ui: &mut egui::Ui,
+    canvas_rect: egui::Rect,
+    magnification: f32,
+) {
+    if let Some((a, b)) = app.text_creating_rect() {
+        let min = canvas_rect.min
+            + egui::vec2(
+                a.0.min(b.0) as f32 * magnification,
+                a.1.min(b.1) as f32 * magnification,
+            );
+        let max = canvas_rect.min
+            + egui::vec2(
+                (a.0.max(b.0) + 1) as f32 * magnification,
+                (a.1.max(b.1) + 1) as f32 * magnification,
+            );
+        let poly = [
+            min,
+            egui::pos2(max.x, min.y),
+            max,
+            egui::pos2(min.x, max.y),
+            min,
+        ];
+        paint_ants(ui.painter(), &poly, 0.0);
+        return;
+    }
+
+    let Some((x, y, width, height)) = app.text_box_rect() else {
+        return;
+    };
+    let Some((family, size, _bold, _italic, _vertical, transparent)) = app.text_box_options()
+    else {
+        return;
+    };
+
+    let min = canvas_rect.min + egui::vec2(x as f32 * magnification, y as f32 * magnification);
+    let rect = egui::Rect::from_min_size(
+        min,
+        egui::vec2(width as f32 * magnification, height as f32 * magnification),
+    );
+
+    if !transparent {
+        ui.painter()
+            .rect_filled(rect, 0.0, to_color32(app.background));
+    }
+    ui.painter().rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(128)),
+        egui::StrokeKind::Outside,
+    );
+
+    let egui_family = match family {
+        FontFamily::Mono => egui::FontFamily::Monospace,
+        _ => egui::FontFamily::Proportional,
+    };
+    let font_id = egui::FontId::new(size * magnification, egui_family);
+    let text_color = to_color32(app.foreground);
+    let text = app.text_buffer_mut();
+    let response = ui.put(
+        rect,
+        egui::TextEdit::multiline(text)
+            .font(font_id)
+            .text_color(text_color)
+            .frame(false)
+            .desired_width(f32::INFINITY),
+    );
+    if app.take_text_focus() {
+        response.request_focus();
+    }
+    ui.ctx().request_repaint();
 }
 
 /// Draws the in-progress polygon outline and the rubber-band preview.

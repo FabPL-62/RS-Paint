@@ -177,6 +177,21 @@ impl Rng {
     }
 }
 
+/// An active text box being edited with the Text tool.
+#[derive(Clone, Copy)]
+pub struct TextBox {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub family: crate::text::FontFamily,
+    pub size: f32,
+    pub bold: bool,
+    pub italic: bool,
+    pub vertical: bool,
+    pub transparent: bool,
+}
+
 /// The root application state.
 pub struct PaintApp {
     /// The image currently being edited.
@@ -263,6 +278,28 @@ pub struct PaintApp {
     curve_base: Option<PixelBuffer>,
     /// Whether a Curve drag is in progress.
     curve_dragging: bool,
+    /// Loaded fonts for the Text tool.
+    fonts: crate::text::FontSet,
+    /// The active text box being edited, if any.
+    text_box: Option<TextBox>,
+    /// The editable text of the active box.
+    text_buffer: String,
+    /// The text box being created by dragging: `(origin, current)`.
+    text_creating: Option<((i32, i32), (i32, i32))>,
+    /// Text tool option: font family.
+    pub text_family: crate::text::FontFamily,
+    /// Text tool option: font size.
+    pub text_size: f32,
+    /// Text tool option: bold.
+    pub text_bold: bool,
+    /// Text tool option: italic.
+    pub text_italic: bool,
+    /// Text tool option: vertical orientation.
+    pub text_vertical: bool,
+    /// Text tool option: transparent background.
+    pub text_transparent: bool,
+    /// Whether the text editor should grab keyboard focus next frame.
+    text_focus: bool,
     /// Cached outline of the in-progress Selection Brush mask.
     sel_brush_boundary: Vec<rspaint_core::selection::BoundarySegment>,
     /// Cached highlight runs of the in-progress Selection Brush mask.
@@ -381,6 +418,17 @@ impl PaintApp {
             curve_points: Vec::new(),
             curve_base: None,
             curve_dragging: false,
+            fonts: crate::text::FontSet::load(),
+            text_box: None,
+            text_buffer: String::new(),
+            text_creating: None,
+            text_family: crate::text::FontFamily::Sans,
+            text_size: 16.0,
+            text_bold: false,
+            text_italic: false,
+            text_vertical: false,
+            text_transparent: true,
+            text_focus: false,
             ctrl_down: false,
             ctrl_tap_used: false,
             show_history: false,
@@ -534,6 +582,9 @@ impl PaintApp {
         }
         if self.tool == Tool::Curve && tool != Tool::Curve {
             self.curve_cancel();
+        }
+        if self.tool == Tool::Text && tool != Tool::Text {
+            self.commit_text();
         }
         if !tool.is_selection() {
             self.deselect();
@@ -695,6 +746,158 @@ impl PaintApp {
             _ => {}
         }
         self.mark_full();
+    }
+
+    /// Whether a text box is currently being edited.
+    pub fn has_text_box(&self) -> bool {
+        self.text_box.is_some()
+    }
+
+    /// The active text box's geometry in image coordinates: `(x, y, width, height)`.
+    pub fn text_box_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        self.text_box.map(|b| (b.x, b.y, b.width, b.height))
+    }
+
+    /// The active box's options: `(family, size, bold, italic, vertical, transparent)`.
+    pub fn text_box_options(
+        &self,
+    ) -> Option<(crate::text::FontFamily, f32, bool, bool, bool, bool)> {
+        self.text_box.map(|b| {
+            (
+                b.family,
+                b.size,
+                b.bold,
+                b.italic,
+                b.vertical,
+                b.transparent,
+            )
+        })
+    }
+
+    /// The editable text buffer of the active box.
+    pub fn text_buffer_mut(&mut self) -> &mut String {
+        &mut self.text_buffer
+    }
+
+    /// Returns and clears the pending editor focus request.
+    pub fn take_text_focus(&mut self) -> bool {
+        std::mem::take(&mut self.text_focus)
+    }
+
+    /// The rectangle being created by dragging, if any.
+    pub fn text_creating_rect(&self) -> Option<((i32, i32), (i32, i32))> {
+        self.text_creating
+    }
+
+    /// Starts creating a text box at `p`.
+    pub fn begin_text_box(&mut self, p: (i32, i32)) {
+        self.text_creating = Some((p, p));
+    }
+
+    /// Updates the text box being created.
+    pub fn update_text_box(&mut self, p: (i32, i32)) {
+        if let Some((_, end)) = self.text_creating.as_mut() {
+            *end = p;
+        }
+    }
+
+    /// Finishes creating a text box, opening it when large enough.
+    pub fn finish_text_box(&mut self) {
+        if let Some((a, b)) = self.text_creating.take() {
+            let width = (a.0 - b.0).abs() + 1;
+            let height = (a.1 - b.1).abs() + 1;
+            if width > 1 && height > 1 {
+                self.open_text_box(a.0.min(b.0), a.1.min(b.1), width, height);
+            }
+        }
+    }
+
+    /// Opens a default-sized text box at `p` (used for a plain click).
+    pub fn default_text_box(&mut self, p: (i32, i32)) {
+        let style = self.text_style();
+        let height = crate::text::line_height(&self.fonts, style) + 8;
+        self.open_text_box(p.0, p.1, 120, height);
+    }
+
+    fn open_text_box(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        self.text_buffer.clear();
+        self.text_focus = true;
+        self.text_box = Some(TextBox {
+            x,
+            y,
+            width,
+            height,
+            family: self.text_family,
+            size: self.text_size,
+            bold: self.text_bold,
+            italic: self.text_italic,
+            vertical: self.text_vertical,
+            transparent: self.text_transparent,
+        });
+    }
+
+    fn text_style(&self) -> crate::text::TextStyle {
+        crate::text::TextStyle {
+            family: self.text_family,
+            size: self.text_size,
+            bold: self.text_bold,
+            italic: self.text_italic,
+        }
+    }
+
+    /// Commits the active text box onto the canvas.
+    pub fn commit_text(&mut self) {
+        let Some(text_box) = self.text_box.take() else {
+            return;
+        };
+        let text = std::mem::take(&mut self.text_buffer);
+        if text.trim().is_empty() {
+            return;
+        }
+        let style = crate::text::TextStyle {
+            family: text_box.family,
+            size: text_box.size,
+            bold: text_box.bold,
+            italic: text_box.italic,
+        };
+        if !text_box.transparent {
+            fill_rectangle(
+                &mut self.document.buffer,
+                (text_box.x, text_box.y),
+                (
+                    text_box.x + text_box.width - 1,
+                    text_box.y + text_box.height - 1,
+                ),
+                self.background,
+            );
+        }
+        let width = text_box.width.max(1) as u32;
+        let height = text_box.height.max(1) as u32;
+        let mut temp = PixelBuffer::transparent(width, height);
+        crate::text::draw_text(
+            &self.fonts,
+            &mut temp,
+            (0, 0),
+            text_box.width,
+            &text,
+            style,
+            self.foreground,
+        );
+        if text_box.vertical {
+            let rotated = crate::text::rotate_90_cw(&temp);
+            crate::text::composite(&mut self.document.buffer, &rotated, text_box.x, text_box.y);
+        } else {
+            crate::text::composite(&mut self.document.buffer, &temp, text_box.x, text_box.y);
+        }
+        self.mark_full();
+        self.commit("Text");
+    }
+
+    /// Discards the active text box and any in-progress box creation.
+    pub fn cancel_text(&mut self) {
+        self.text_box = None;
+        self.text_buffer.clear();
+        self.text_creating = None;
     }
 
     /// The outline of the active selection in canvas coordinates.
@@ -2113,6 +2316,15 @@ impl PaintApp {
         let mut size_delta = 0i32;
         let mut radius_delta = 0i32;
         ctx.input_mut(|i| {
+            // While editing a text box, the editor consumes the keyboard; only
+            // Escape (commit) is handled here.
+            if self.has_text_box() {
+                self.ctrl_down = i.modifiers.command;
+                if i.consume_key(Modifiers::NONE, Key::Escape) {
+                    self.commit_text();
+                }
+                return;
+            }
             if i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals) {
                 size_delta += 1;
             }
@@ -2183,7 +2395,9 @@ impl PaintApp {
             {
                 self.delete_selection();
             } else if i.consume_key(Modifiers::NONE, Key::Escape) {
-                if !self.curve_points.is_empty() {
+                if self.has_text_box() {
+                    self.commit_text();
+                } else if !self.curve_points.is_empty() {
                     self.curve_cancel();
                 } else if self.polygon_points.is_empty() {
                     self.deselect();

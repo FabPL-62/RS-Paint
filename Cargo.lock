@@ -2475,9 +2475,11 @@ dependencies = [
 name = "rspaint-app"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "bytemuck",
  "eframe",
  "egui",
+ "epaint_default_fonts",
  "rfd",
  "rspaint-core",
 ]

@@ -4,6 +4,7 @@ use eframe::egui;
 use rspaint_core::{BrushShape, Color};
 
 use crate::app::{BorderPlacement, PaintApp, ShapeFill};
+use crate::text::FontFamily;
 use crate::tools::Tool;
 
 /// Draws the tool selection buttons and the options for the active tool.
@@ -117,6 +118,33 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
                 color_rgb_controls(ui, &mut app.outliner_color);
             }
             ui.label("Drag on the canvas to apply");
+        }
+        Tool::Text => {
+            ui.horizontal(|ui| {
+                ui.label("Font");
+                egui::ComboBox::from_id_salt("text_family")
+                    .selected_text(app.text_family.label())
+                    .show_ui(ui, |ui| {
+                        for family in FontFamily::ALL {
+                            ui.selectable_value(&mut app.text_family, family, family.label());
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Size");
+                ui.add(
+                    egui::DragValue::new(&mut app.text_size)
+                        .range(4.0..=400.0)
+                        .speed(0.5),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut app.text_bold, "Bold");
+                ui.checkbox(&mut app.text_italic, "Italic");
+            });
+            ui.checkbox(&mut app.text_vertical, "Vertical");
+            ui.checkbox(&mut app.text_transparent, "Transparent");
+            ui.label("Drag on the canvas to place text");
         }
         Tool::Select | Tool::FreeFormSelect | Tool::MagicWand => {
             ui.checkbox(&mut app.selection_transparent, "Transparent");

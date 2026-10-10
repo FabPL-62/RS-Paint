@@ -2,6 +2,7 @@
 
 mod app;
 mod canvas_renderer;
+mod text;
 mod theme;
 mod tools;
 mod ui;
