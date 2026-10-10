@@ -78,7 +78,7 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
         }
         Tool::Eraser => size_row(ui, "Size", &mut app.eraser_size, 1..=500),
         Tool::Airbrush => size_row(ui, "Size", &mut app.airbrush_size, 1..=500),
-        Tool::Line => size_row(ui, "Width", &mut app.stroke_size, 1..=500),
+        Tool::Line | Tool::Curve => size_row(ui, "Width", &mut app.stroke_size, 1..=500),
         Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle => {
             size_row(ui, "Width", &mut app.stroke_size, 1..=500);
             if app.tool == Tool::RoundedRectangle {

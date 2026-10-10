@@ -63,6 +63,8 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         handle_selection(app, ui, &response, canvas_rect, &to_canvas);
     } else if app.tool == Tool::Polygon {
         handle_polygon(app, &response, canvas_rect, &to_canvas);
+    } else if app.tool == Tool::Curve {
+        handle_curve(app, ui, &response, canvas_rect, &to_canvas);
     } else {
         handle_drawing(app, ui, &response, canvas_rect, &to_canvas);
     }
@@ -107,6 +109,47 @@ fn handle_polygon(
     }
     if response.secondary_clicked() {
         app.finish_polygon();
+    }
+}
+
+/// Handles the multi-step Curve tool: draw a line, then drag two control points.
+fn handle_curve(
+    app: &mut PaintApp,
+    ui: &egui::Ui,
+    response: &egui::Response,
+    canvas_rect: egui::Rect,
+    to_canvas: &impl Fn(Pos2) -> (i32, i32),
+) {
+    let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
+
+    if response.drag_started() {
+        let origin = ui
+            .input(|i| i.pointer.press_origin())
+            .or(response.interact_pointer_pos());
+        if let Some(pos) = origin {
+            if on_canvas(pos) {
+                app.curve_pointer_down(to_canvas(pos));
+            }
+        }
+    }
+    if response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            app.curve_pointer_move(to_canvas(pos));
+        }
+    }
+    if response.drag_stopped() {
+        app.curve_pointer_up();
+    }
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if on_canvas(pos) {
+                app.curve_pointer_down(to_canvas(pos));
+                app.curve_pointer_up();
+            }
+        }
+    }
+    if response.secondary_clicked() {
+        app.curve_cancel();
     }
 }
 

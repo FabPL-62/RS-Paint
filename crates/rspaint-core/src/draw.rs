@@ -306,12 +306,99 @@ pub fn fill_polygon(buffer: &mut PixelBuffer, points: &[(i32, i32)], color: Colo
     }
 }
 
+fn bezier_steps(points: &[Point]) -> i32 {
+    let mut length = 0.0;
+    for pair in points.windows(2) {
+        let dx = (pair[1].0 - pair[0].0) as f64;
+        let dy = (pair[1].1 - pair[0].1) as f64;
+        length += (dx * dx + dy * dy).sqrt();
+    }
+    (length.ceil() as i32).clamp(8, 2048)
+}
+
+fn quad_point(t: f64, p0: Point, control: Point, p1: Point) -> Point {
+    let mt = 1.0 - t;
+    let x = mt * mt * p0.0 as f64 + 2.0 * mt * t * control.0 as f64 + t * t * p1.0 as f64;
+    let y = mt * mt * p0.1 as f64 + 2.0 * mt * t * control.1 as f64 + t * t * p1.1 as f64;
+    (x.round() as i32, y.round() as i32)
+}
+
+fn cubic_point(t: f64, p0: Point, c1: Point, c2: Point, p1: Point) -> Point {
+    let mt = 1.0 - t;
+    let x = mt * mt * mt * p0.0 as f64
+        + 3.0 * mt * mt * t * c1.0 as f64
+        + 3.0 * mt * t * t * c2.0 as f64
+        + t * t * t * p1.0 as f64;
+    let y = mt * mt * mt * p0.1 as f64
+        + 3.0 * mt * mt * t * c1.1 as f64
+        + 3.0 * mt * t * t * c2.1 as f64
+        + t * t * t * p1.1 as f64;
+    (x.round() as i32, y.round() as i32)
+}
+
+/// Draws a quadratic Bézier curve from `start` to `end` with one control point.
+pub fn draw_quadratic_curve(
+    buffer: &mut PixelBuffer,
+    start: Point,
+    control: Point,
+    end: Point,
+    brush: &Brush,
+    color: Color,
+) {
+    let steps = bezier_steps(&[start, control, end]);
+    let mut previous = start;
+    for i in 1..=steps {
+        let t = i as f64 / steps as f64;
+        let point = quad_point(t, start, control, end);
+        draw_line(buffer, previous, point, brush, color);
+        previous = point;
+    }
+}
+
+/// Draws a cubic Bézier curve from `start` to `end` with two control points.
+pub fn draw_bezier(
+    buffer: &mut PixelBuffer,
+    start: Point,
+    control_1: Point,
+    control_2: Point,
+    end: Point,
+    brush: &Brush,
+    color: Color,
+) {
+    let steps = bezier_steps(&[start, control_1, control_2, end]);
+    let mut previous = start;
+    for i in 1..=steps {
+        let t = i as f64 / steps as f64;
+        let point = cubic_point(t, start, control_1, control_2, end);
+        draw_line(buffer, previous, point, brush, color);
+        previous = point;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn count_non_transparent(buffer: &PixelBuffer) -> usize {
         buffer.data().chunks_exact(4).filter(|p| p[3] != 0).count()
+    }
+
+    #[test]
+    fn bezier_covers_endpoints() {
+        let mut buffer = PixelBuffer::transparent(32, 32);
+        draw_bezier(
+            &mut buffer,
+            (2, 2),
+            (2, 20),
+            (28, 20),
+            (28, 2),
+            &Brush::PENCIL,
+            Color::BLACK,
+        );
+        assert_eq!(buffer.get(2, 2), Some(Color::BLACK), "start");
+        assert_eq!(buffer.get(28, 2), Some(Color::BLACK), "end");
+        // The curve dips down in the middle (not a straight line).
+        assert_eq!(buffer.get(15, 2), Some(Color::TRANSPARENT), "not straight");
     }
 
     #[test]

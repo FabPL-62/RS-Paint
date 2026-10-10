@@ -94,7 +94,7 @@ impl Tool {
 
     /// Whether the tool is implemented in the current MVP.
     pub fn implemented(self) -> bool {
-        !matches!(self, Tool::Text | Tool::Curve)
+        !matches!(self, Tool::Text)
     }
 
     /// Tools that draw continuously while the pointer is dragged.

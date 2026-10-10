@@ -3,8 +3,9 @@
 use eframe::egui;
 use egui::{Color32, Key, Modifiers, PointerButton};
 use rspaint_core::draw::{
-    draw_ellipse, draw_line, draw_rectangle, draw_rounded_rectangle, erase_line, fill_ellipse,
-    fill_rectangle, fill_rounded_rectangle, walk_dense_line, walk_line,
+    draw_bezier, draw_ellipse, draw_line, draw_quadratic_curve, draw_rectangle,
+    draw_rounded_rectangle, erase_line, fill_ellipse, fill_rectangle, fill_rounded_rectangle,
+    walk_dense_line, walk_line,
 };
 use rspaint_core::fill::flood_fill;
 use rspaint_core::{palette, transform, Brush, BrushShape, Color, Document, History, PixelBuffer};
@@ -256,6 +257,12 @@ pub struct PaintApp {
     sel_brush_active: bool,
     /// The last point of the Selection Brush stroke.
     sel_brush_last: Option<(i32, i32)>,
+    /// The Curve tool's points: [start, end, control1, control2].
+    curve_points: Vec<(i32, i32)>,
+    /// Pre-curve copy of the canvas, restored on each preview.
+    curve_base: Option<PixelBuffer>,
+    /// Whether a Curve drag is in progress.
+    curve_dragging: bool,
     /// Cached outline of the in-progress Selection Brush mask.
     sel_brush_boundary: Vec<rspaint_core::selection::BoundarySegment>,
     /// Cached highlight runs of the in-progress Selection Brush mask.
@@ -371,6 +378,9 @@ impl PaintApp {
             sel_brush_last: None,
             sel_brush_boundary: Vec::new(),
             sel_brush_runs: Vec::new(),
+            curve_points: Vec::new(),
+            curve_base: None,
+            curve_dragging: false,
             ctrl_down: false,
             ctrl_tap_used: false,
             show_history: false,
@@ -412,7 +422,7 @@ impl PaintApp {
             Tool::Eraser => self.eraser_size,
             // The airbrush sprays within `airbrush_size` pixels of the cursor.
             Tool::Airbrush => self.airbrush_size * 2 + 1,
-            Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle => {
+            Tool::Line | Tool::Curve | Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle => {
                 self.stroke_size
             }
             _ => 1,
@@ -522,6 +532,9 @@ impl PaintApp {
         if self.tool == Tool::Polygon && tool != Tool::Polygon {
             self.finish_polygon();
         }
+        if self.tool == Tool::Curve && tool != Tool::Curve {
+            self.curve_cancel();
+        }
         if !tool.is_selection() {
             self.deselect();
         }
@@ -608,6 +621,80 @@ impl PaintApp {
     pub fn cancel_polygon(&mut self) {
         self.polygon_points.clear();
         self.polygon_preview = None;
+    }
+
+    /// Begins (or extends) a Curve drag, adding a point at `p`.
+    pub fn curve_pointer_down(&mut self, p: (i32, i32)) {
+        if self.curve_points.is_empty() {
+            self.curve_base = Some(self.document.buffer.clone());
+            self.curve_points.push(p);
+            self.curve_points.push(p);
+        } else {
+            self.curve_points.push(p);
+        }
+        self.curve_dragging = true;
+        self.curve_redraw();
+    }
+
+    /// Moves the point currently being dragged.
+    pub fn curve_pointer_move(&mut self, p: (i32, i32)) {
+        if !self.curve_dragging {
+            return;
+        }
+        if let Some(last) = self.curve_points.last_mut() {
+            *last = p;
+        }
+        self.curve_redraw();
+    }
+
+    /// Ends a Curve drag, committing once the curve has four points.
+    pub fn curve_pointer_up(&mut self) {
+        self.curve_dragging = false;
+        if self.curve_points.len() >= 4 {
+            self.curve_base = None;
+            self.curve_points.clear();
+            self.commit("Curve");
+        }
+    }
+
+    /// Discards the in-progress curve, restoring the canvas.
+    pub fn curve_cancel(&mut self) {
+        if self.curve_points.is_empty() {
+            return;
+        }
+        if let Some(base) = self.curve_base.take() {
+            self.document.buffer = base;
+            self.mark_full();
+        }
+        self.curve_points.clear();
+        self.curve_dragging = false;
+    }
+
+    fn curve_redraw(&mut self) {
+        let Some(base) = self.curve_base.as_ref() else {
+            return;
+        };
+        let (width, height) = (self.document.width(), self.document.height());
+        self.document
+            .buffer
+            .copy_region_from(base, 0, 0, width, height);
+        let brush = Brush::new(BrushShape::Square, self.stroke_size);
+        let color = self.foreground;
+        let points = self.curve_points.clone();
+        let buffer = &mut self.document.buffer;
+        match points.as_slice() {
+            [] => {}
+            [p] => brush.stamp(buffer, p.0, p.1, color),
+            [start, end] => draw_line(buffer, *start, *end, &brush, color),
+            [start, end, control] => {
+                draw_quadratic_curve(buffer, *start, *control, *end, &brush, color)
+            }
+            [start, end, control_1, control_2] => {
+                draw_bezier(buffer, *start, *control_1, *control_2, *end, &brush, color)
+            }
+            _ => {}
+        }
+        self.mark_full();
     }
 
     /// The outline of the active selection in canvas coordinates.
@@ -2096,7 +2183,9 @@ impl PaintApp {
             {
                 self.delete_selection();
             } else if i.consume_key(Modifiers::NONE, Key::Escape) {
-                if self.polygon_points.is_empty() {
+                if !self.curve_points.is_empty() {
+                    self.curve_cancel();
+                } else if self.polygon_points.is_empty() {
                     self.deselect();
                 } else {
                     self.cancel_polygon();
@@ -2147,7 +2236,7 @@ impl PaintApp {
             Tool::Brush | Tool::SelectionBrush => step_size(&mut self.brush_size, delta, 500),
             Tool::Eraser => step_size(&mut self.eraser_size, delta, 500),
             Tool::Airbrush => step_size(&mut self.airbrush_size, delta, 500),
-            Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle => {
+            Tool::Line | Tool::Curve | Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle => {
                 step_size(&mut self.stroke_size, delta, 500);
             }
             _ => {}
