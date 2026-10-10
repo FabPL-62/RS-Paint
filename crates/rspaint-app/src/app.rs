@@ -192,6 +192,43 @@ pub struct TextBox {
     pub transparent: bool,
 }
 
+/// Which color a color picker edits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ColorTarget {
+    Foreground,
+    Background,
+    /// A palette swatch, by index.
+    Palette(usize),
+    /// A custom (recent) color swatch, by index.
+    Custom(usize),
+    /// The Outliner's concave-corner color.
+    Outliner,
+}
+
+/// The state of the advanced (HSV) color picker popup.
+pub struct ColorPicker {
+    /// Which color is being edited.
+    pub target: ColorTarget,
+    /// Hue in degrees (`0..360`).
+    pub hue: f32,
+    /// Saturation (`0..=1`).
+    pub sat: f32,
+    /// Value (`0..=1`).
+    pub val: f32,
+    /// Where to place the popup, in screen coordinates.
+    pub anchor: egui::Pos2,
+    /// Set for the frame the popup opens, so the opening click doesn't close it.
+    pub just_opened: bool,
+}
+
+/// The choice made in the close-confirmation dialog.
+#[derive(Clone, Copy)]
+enum Action {
+    Cancel,
+    SaveAndClose,
+    Exit,
+}
+
 /// The root application state.
 pub struct PaintApp {
     /// The image currently being edited.
@@ -300,6 +337,12 @@ pub struct PaintApp {
     pub text_transparent: bool,
     /// Pre-text copy of the canvas, restored on each live preview.
     text_base: Option<PixelBuffer>,
+    /// The advanced color picker popup, if open.
+    color_picker: Option<ColorPicker>,
+    /// Whether a long-press on a palette swatch already opened the picker.
+    pub swatch_hold_fired: bool,
+    /// Next slot in the custom (recent) color row to write.
+    custom_index: usize,
     /// Cached outline of the in-progress Selection Brush mask.
     sel_brush_boundary: Vec<rspaint_core::selection::BoundarySegment>,
     /// Cached highlight runs of the in-progress Selection Brush mask.
@@ -328,6 +371,10 @@ pub struct PaintApp {
     skew_v: f64,
     /// Whether the About window is open.
     pub show_about: bool,
+    /// Whether the close-confirmation dialog is open.
+    show_close_confirm: bool,
+    /// Set once the user confirmed closing, to bypass the confirmation.
+    force_close: bool,
     /// Whether the Attributes dialog is open.
     pub show_attributes: bool,
     /// Attributes dialog: canvas width.
@@ -429,6 +476,9 @@ impl PaintApp {
             text_vertical: false,
             text_transparent: true,
             text_base: None,
+            color_picker: None,
+            swatch_hold_fired: false,
+            custom_index: 0,
             ctrl_down: false,
             ctrl_tap_used: false,
             show_history: false,
@@ -441,6 +491,8 @@ impl PaintApp {
             skew_h: 0.0,
             skew_v: 0.0,
             show_about: false,
+            show_close_confirm: false,
+            force_close: false,
             show_attributes: false,
             attributes_width: rspaint_core::document::DEFAULT_CANVAS_WIDTH,
             attributes_height: rspaint_core::document::DEFAULT_CANVAS_HEIGHT,
@@ -646,6 +698,7 @@ impl PaintApp {
         }
         let stroke = self.polygon_stroke;
         let fill = self.polygon_fill;
+        self.note_used_color(stroke);
         let brush = Brush::new(BrushShape::Square, self.stroke_size);
         let interior = match self.fill_style {
             ShapeFill::Outline => None,
@@ -704,6 +757,7 @@ impl PaintApp {
         if self.curve_points.len() >= 4 {
             self.curve_base = None;
             self.curve_points.clear();
+            self.note_used_color(self.foreground);
             self.commit("Curve");
         }
     }
@@ -946,11 +1000,119 @@ impl PaintApp {
         }
         if !text.trim().is_empty() {
             self.draw_text_box(text_box, &text);
+            self.note_used_color(self.foreground);
             self.mark_full();
             self.commit("Text");
         } else {
             self.mark_full();
         }
+    }
+
+    /// Opens the advanced color picker for `target`, initialized to `color`.
+    pub fn open_color_picker(&mut self, target: ColorTarget, color: Color, anchor: egui::Pos2) {
+        let (hue, sat, val) = color.to_hsv();
+        self.color_picker = Some(ColorPicker {
+            target,
+            hue,
+            sat,
+            val,
+            anchor,
+            just_opened: true,
+        });
+    }
+
+    /// Read-only access to the open color picker.
+    pub fn color_picker_ref(&self) -> Option<&ColorPicker> {
+        self.color_picker.as_ref()
+    }
+
+    /// Mutable access to the open color picker.
+    pub fn color_picker_mut(&mut self) -> Option<&mut ColorPicker> {
+        self.color_picker.as_mut()
+    }
+
+    /// Applies the picker's color to its target.
+    pub fn apply_color_picker(&mut self) {
+        let Some(picker) = self.color_picker.as_ref() else {
+            return;
+        };
+        let color = Color::from_hsv(picker.hue, picker.sat, picker.val);
+        let target = picker.target;
+        match target {
+            ColorTarget::Foreground => self.foreground = color,
+            ColorTarget::Background => self.background = color,
+            ColorTarget::Palette(index) => {
+                if let Some(slot) = self.palette.get_mut(index) {
+                    *slot = color;
+                }
+            }
+            ColorTarget::Custom(index) => {
+                if let Some(slot) = self.custom_colors.get_mut(index) {
+                    *slot = color;
+                }
+            }
+            ColorTarget::Outliner => self.outliner_color = color,
+        }
+    }
+
+    /// Closes the color picker.
+    pub fn close_color_picker(&mut self) {
+        self.color_picker = None;
+    }
+
+    /// Swaps the foreground and background colors.
+    pub fn swap_colors(&mut self) {
+        std::mem::swap(&mut self.foreground, &mut self.background);
+    }
+
+    /// Records a color as recently used, filling the custom row left to right.
+    ///
+    /// Colors already present in the palette or the custom row are skipped.
+    pub fn note_used_color(&mut self, color: Color) {
+        let count = self.custom_colors.len();
+        if count == 0 {
+            return;
+        }
+        if self.palette.contains(&color) || self.custom_colors.contains(&color) {
+            return;
+        }
+        self.custom_colors[self.custom_index % count] = color;
+        self.custom_index = (self.custom_index + 1) % count;
+    }
+
+    /// Restores the default palette (the first two rows only).
+    pub fn reset_colors(&mut self) {
+        self.palette = palette::default_palette();
+    }
+
+    /// Captures distinct colors from the image into the custom row.
+    ///
+    /// Colors already in the palette are ignored; only the first
+    /// [`CUSTOM_COLOR_COUNT`](rspaint_core::palette::CUSTOM_COLOR_COUNT)
+    /// detected colors are kept, in scan order.
+    pub fn capture_colors(&mut self) {
+        let count = rspaint_core::palette::CUSTOM_COLOR_COUNT;
+        let mut found: Vec<Color> = Vec::new();
+        'scan: for y in 0..self.document.height() {
+            for x in 0..self.document.width() {
+                let Some(color) = self.document.buffer.get(x, y) else {
+                    continue;
+                };
+                if color.a == 0 || self.palette.contains(&color) || found.contains(&color) {
+                    continue;
+                }
+                found.push(color);
+                if found.len() >= count {
+                    break 'scan;
+                }
+            }
+        }
+        let mut row = vec![Color::BLACK; count];
+        for (slot, color) in row.iter_mut().zip(&found) {
+            *slot = *color;
+        }
+        self.custom_colors = row;
+        self.custom_index = found.len() % count;
     }
 
     /// Discards the active text box and any in-progress box creation.
@@ -2123,6 +2285,7 @@ impl PaintApp {
     /// Starts a stroke at `p` using the given mouse button.
     pub fn begin_stroke(&mut self, p: (i32, i32), button: PointerButton) {
         let color = self.active_color(button);
+        self.note_used_color(color);
         // The fill color is the opposite of the stroke color (right-drag swaps).
         let fill_color = if button == PointerButton::Secondary {
             self.foreground
@@ -2345,6 +2508,7 @@ impl PaintApp {
         match self.tool {
             Tool::Fill => {
                 let color = self.active_color(button);
+                self.note_used_color(color);
                 flood_fill(&mut self.document.buffer, p.0, p.1, color, !shift);
                 self.commit("Fill With Color");
                 self.mark_full();
@@ -2662,6 +2826,15 @@ fn bool_f32(value: bool) -> f32 {
 
 impl eframe::App for PaintApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Intercept the window close when there are unsaved changes.
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.document.modified
+            && !self.force_close
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_close_confirm = true;
+        }
+
         self.handle_shortcuts(ctx);
         self.update_title(ctx);
 
@@ -2669,6 +2842,7 @@ impl eframe::App for PaintApp {
         ui::toolbox::show(self, ctx);
         ui::status_bar::show(self, ctx);
         ui::colorbox::show(self, ctx);
+        ui::color_picker::show(self, ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui::canvas_view::show(self, ui);
@@ -2686,6 +2860,7 @@ impl eframe::App for PaintApp {
                 });
         }
 
+        self.show_close_confirm_window(ctx);
         self.show_attributes_window(ctx);
         self.show_history_window(ctx);
         self.show_flip_rotate_window(ctx);
@@ -2854,6 +3029,60 @@ impl PaintApp {
             self.apply_stretch_skew();
         } else if cancel || !open {
             self.show_stretch_skew = false;
+        }
+    }
+
+    /// The "unsaved changes" confirmation shown when closing the window.
+    fn show_close_confirm_window(&mut self, ctx: &egui::Context) {
+        if !self.show_close_confirm {
+            return;
+        }
+        let mut open = true;
+        let mut action = None;
+        egui::Window::new("Cerrar RS Paint")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(360.0);
+                ui.add_space(8.0);
+                ui.label("¿Seguro que quieres cerrar el programa?");
+                ui.label("Los cambios no guardados se perderán.");
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancelar").clicked() {
+                        action = Some(Action::Cancel);
+                    }
+                    if ui.button("Guardar y salir").clicked() {
+                        action = Some(Action::SaveAndClose);
+                    }
+                    if ui.button("Salir").clicked() {
+                        action = Some(Action::Exit);
+                    }
+                });
+                ui.add_space(4.0);
+            });
+        if !open {
+            action = Some(Action::Cancel);
+        }
+
+        match action {
+            Some(Action::Cancel) => self.show_close_confirm = false,
+            Some(Action::SaveAndClose) => {
+                self.save();
+                if !self.document.modified {
+                    self.force_close = true;
+                    self.show_close_confirm = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            Some(Action::Exit) => {
+                self.force_close = true;
+                self.show_close_confirm = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            None => {}
         }
     }
 

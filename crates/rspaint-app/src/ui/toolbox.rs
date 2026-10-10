@@ -3,7 +3,7 @@
 use eframe::egui;
 use rspaint_core::{BrushShape, Color};
 
-use crate::app::{BorderPlacement, PaintApp, ShapeFill};
+use crate::app::{to_color32, BorderPlacement, ColorTarget, PaintApp, ShapeFill};
 use crate::text::FontFamily;
 use crate::tools::Tool;
 
@@ -114,8 +114,10 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
             );
             ui.checkbox(&mut app.outliner_concave, "Concave corners");
             if app.outliner_concave {
-                ui.label("Corner color");
-                color_rgb_controls(ui, &mut app.outliner_color);
+                ui.horizontal(|ui| {
+                    ui.label("Corner color");
+                    color_button(ui, app, ColorTarget::Outliner, app.outliner_color);
+                });
             }
             ui.label("Drag on the canvas to apply");
         }
@@ -173,12 +175,23 @@ fn size_row(ui: &mut egui::Ui, label: &str, value: &mut u32, range: std::ops::Ra
     });
 }
 
-fn color_rgb_controls(ui: &mut egui::Ui, color: &mut Color) {
-    ui.horizontal(|ui| {
-        ui.add(egui::DragValue::new(&mut color.r).range(0..=255));
-        ui.add(egui::DragValue::new(&mut color.g).range(0..=255));
-        ui.add(egui::DragValue::new(&mut color.b).range(0..=255));
-    });
+/// A color swatch button that opens the advanced color picker for `target`.
+fn color_button(ui: &mut egui::Ui, app: &mut PaintApp, target: ColorTarget, color: Color) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(rect, 2.0, to_color32(color));
+        painter.rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if response.clicked() {
+        let anchor = response.rect.left_top() - egui::vec2(0.0, 8.0);
+        app.open_color_picker(target, color, anchor);
+    }
 }
 
 fn shape_row(ui: &mut egui::Ui, shape: &mut BrushShape, allow_diagonal: bool) {

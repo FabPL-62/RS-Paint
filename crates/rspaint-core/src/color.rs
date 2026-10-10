@@ -70,6 +70,49 @@ impl Color {
         }
     }
 
+    /// Creates an opaque color from HSV.
+    ///
+    /// `hue` is in degrees (`0..360`), `saturation` and `value` in `0..=1`.
+    pub fn from_hsv(hue: f32, saturation: f32, value: f32) -> Self {
+        let h = hue.rem_euclid(360.0) / 60.0;
+        let s = saturation.clamp(0.0, 1.0);
+        let v = value.clamp(0.0, 1.0);
+        let c = v * s;
+        let x = c * (1.0 - ((h % 2.0) - 1.0).abs());
+        let m = v - c;
+        let (r, g, b) = match h as i32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        let to = |f: f32| ((f + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+        Self::rgb(to(r), to(g), to(b))
+    }
+
+    /// Returns `(hue, saturation, value)` for this color, ignoring alpha.
+    pub fn to_hsv(self) -> (f32, f32, f32) {
+        let r = f32::from(self.r) / 255.0;
+        let g = f32::from(self.g) / 255.0;
+        let b = f32::from(self.b) / 255.0;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+        let hue = if delta == 0.0 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / delta) % 6.0)
+        } else if max == g {
+            60.0 * (((b - r) / delta) + 2.0)
+        } else {
+            60.0 * (((r - g) / delta) + 4.0)
+        };
+        let saturation = if max == 0.0 { 0.0 } else { delta / max };
+        (hue.rem_euclid(360.0), saturation, max)
+    }
+
     /// Composites `self` (the source) over `dst` using source-over alpha blending.
     pub fn over(self, dst: Self) -> Self {
         if self.is_opaque() {
@@ -133,6 +176,29 @@ mod tests {
             Some(Color::rgba(0, 0, 255, 128))
         );
         assert_eq!(Color::from_hex("nope"), None);
+    }
+
+    #[test]
+    fn hsv_round_trips_primary_colors() {
+        for color in [
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 255, 0),
+            Color::rgb(0, 0, 255),
+            Color::rgb(128, 64, 32),
+            Color::BLACK,
+            Color::WHITE,
+        ] {
+            let (h, s, v) = color.to_hsv();
+            assert_eq!(Color::from_hsv(h, s, v), color, "round trip {color:?}");
+        }
+    }
+
+    #[test]
+    fn hsv_known_values() {
+        assert_eq!(Color::from_hsv(0.0, 1.0, 1.0), Color::rgb(255, 0, 0));
+        assert_eq!(Color::from_hsv(120.0, 1.0, 1.0), Color::rgb(0, 255, 0));
+        assert_eq!(Color::from_hsv(240.0, 1.0, 1.0), Color::rgb(0, 0, 255));
+        assert_eq!(Color::from_hsv(0.0, 0.0, 1.0), Color::WHITE);
     }
 
     #[test]

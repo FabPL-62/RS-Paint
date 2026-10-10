@@ -20,8 +20,8 @@ pub const BASIC_COLORS: [&str; 48] = [
     "C0C0C0", "400040", "FFFFFF",
 ];
 
-/// Number of customizable colors shown in the palette.
-pub const CUSTOM_COLOR_COUNT: usize = 16;
+/// Number of customizable colors shown in the palette (one row).
+pub const CUSTOM_COLOR_COUNT: usize = 14;
 
 /// Parses a slice of hex strings, skipping any that fail to parse.
 pub fn colors_from_hex(hexes: &[&str]) -> Vec<Color> {
@@ -47,9 +47,9 @@ pub fn monochrome_palette() -> Vec<Color> {
     colors_from_hex(&MONO)
 }
 
-/// The initial custom color swatches (all white, as in JS Paint).
+/// The initial custom color swatches (all black).
 pub fn default_custom_colors() -> Vec<Color> {
-    vec![Color::WHITE; CUSTOM_COLOR_COUNT]
+    vec![Color::BLACK; CUSTOM_COLOR_COUNT]
 }
 
 #[cfg(test)]
@@ -70,8 +70,8 @@ mod tests {
     }
 
     #[test]
-    fn custom_colors_start_white() {
+    fn custom_colors_start_black() {
         assert_eq!(default_custom_colors().len(), CUSTOM_COLOR_COUNT);
-        assert!(default_custom_colors().iter().all(|c| *c == Color::WHITE));
+        assert!(default_custom_colors().iter().all(|c| *c == Color::BLACK));
     }
 }
