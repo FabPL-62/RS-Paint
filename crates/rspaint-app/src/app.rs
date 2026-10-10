@@ -386,6 +386,8 @@ pub struct PaintApp {
     force_close: bool,
     /// Active temporary color-pick (Ctrl = primary, Alt = secondary).
     pick_hold: Option<PickTarget>,
+    /// The loaded custom tool cursors.
+    cursors: crate::cursors::CursorSet,
     /// Whether the Attributes dialog is open.
     pub show_attributes: bool,
     /// Attributes dialog: canvas width.
@@ -506,6 +508,7 @@ impl PaintApp {
             show_close_confirm: false,
             force_close: false,
             pick_hold: None,
+            cursors: crate::cursors::CursorSet::load(&cc.egui_ctx),
             show_attributes: false,
             attributes_width: rspaint_core::document::DEFAULT_CANVAS_WIDTH,
             attributes_height: rspaint_core::document::DEFAULT_CANVAS_HEIGHT,
@@ -2547,6 +2550,13 @@ impl PaintApp {
     /// The active temporary color-pick, if any.
     pub fn pick_hold(&self) -> Option<PickTarget> {
         self.pick_hold
+    }
+
+    /// Draws the custom tool cursor with its hotspot at `pointer` (screen space).
+    pub fn paint_cursor(&self, painter: &egui::Painter, pointer: egui::Pos2) {
+        self.cursors
+            .for_state(self.tool, self.pick_hold)
+            .paint(painter, pointer);
     }
 
     /// Picks the color under `p` into the given active color.

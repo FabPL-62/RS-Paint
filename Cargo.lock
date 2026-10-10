@@ -2480,6 +2480,7 @@ dependencies = [
  "eframe",
  "egui",
  "epaint_default_fonts",
+ "image",
  "rfd",
  "rspaint-core",
 ]

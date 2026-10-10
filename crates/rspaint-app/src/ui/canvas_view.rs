@@ -39,6 +39,16 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     );
     let canvas_rect = egui::Rect::from_min_size(viewport_rect.min + app.pan, doc_size);
 
+    // Over the visible canvas (the paper, clipped to the viewport) hide the OS
+    // pointer and draw the tool's own cursor image instead. Over the gray area
+    // outside the paper the system pointer stays visible.
+    let visible_canvas = canvas_rect.intersect(viewport_rect);
+    let cursor_pos = ui.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.interact_pos()));
+    let over_canvas = cursor_pos.is_some_and(|pos| visible_canvas.contains(pos));
+    if over_canvas {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+    }
+
     let to_canvas = |pos: Pos2| -> (i32, i32) {
         (
             ((pos.x - canvas_rect.min.x) / magnification).floor() as i32,
@@ -89,6 +99,13 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     paint_selection_overlay(app, ui, canvas_rect, magnification);
     paint_polygon_overlay(app, ui, canvas_rect, magnification);
     paint_text_overlay(app, ui, canvas_rect, magnification);
+
+    // Draw the custom tool cursor (the OS pointer is hidden over the canvas).
+    if over_canvas {
+        if let Some(pos) = cursor_pos {
+            app.paint_cursor(ui.painter(), pos);
+        }
+    }
 }
 
 /// Handles the temporary Ctrl/Alt color-pick while a drawing tool is active.
