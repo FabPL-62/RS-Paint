@@ -345,7 +345,7 @@ impl PaintApp {
             stroke_size: 1,
             round_radius: 10,
             fill_style: ShapeFill::Outline,
-            grid_opacity: 70,
+            grid_opacity: 20,
             outliner_size: 1,
             outliner_concave: false,
             outliner_color: Color::WHITE,
@@ -2082,6 +2082,11 @@ impl PaintApp {
                 self.invert_colors();
             } else if i.consume_key(Modifiers::CTRL, Key::E) {
                 self.select_all();
+                // With the Outliner, Ctrl+E applies it to the whole image.
+                if self.tool == Tool::Outliner {
+                    self.apply_outliner();
+                    self.deselect();
+                }
             } else if i.consume_key(Modifiers::CTRL, Key::R) {
                 self.show_flip_rotate = true;
             } else if i.consume_key(Modifiers::CTRL, Key::W) {
