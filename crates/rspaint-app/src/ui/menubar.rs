@@ -74,6 +74,10 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                     app.magnification = 1.0;
                     ui.close();
                 }
+                if ui.button("Adjust Zoom").clicked() {
+                    app.adjust_zoom();
+                    ui.close();
+                }
             });
 
             ui.menu_button("Image", |ui| {

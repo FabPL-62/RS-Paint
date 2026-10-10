@@ -360,6 +360,10 @@ pub struct PaintApp {
     clipboard: Option<ClipboardContent>,
     /// The in-progress canvas resize, if any.
     resize_drag: Option<ResizeDrag>,
+    /// The size of the canvas viewport, updated each frame (for initial zoom).
+    viewport_size: egui::Vec2,
+    /// Whether to adjust the zoom on the first frame with a known viewport.
+    pending_adjust_zoom: bool,
     /// Committed vertices of the in-progress Polygon.
     polygon_points: Vec<(i32, i32)>,
     /// The cursor position previewed as the next Polygon vertex.
@@ -529,6 +533,8 @@ impl PaintApp {
             selection_undo: Vec::new(),
             clipboard: None,
             resize_drag: None,
+            viewport_size: egui::Vec2::ZERO,
+            pending_adjust_zoom: true,
             polygon_points: Vec::new(),
             polygon_preview: None,
             polygon_stroke: Color::BLACK,
@@ -646,6 +652,7 @@ impl PaintApp {
         self.selection = None;
         self.creating_selection = None;
         self.selection_undo.clear();
+        self.adjust_zoom();
         self.mark_full();
     }
 
@@ -2073,8 +2080,40 @@ impl PaintApp {
         self.selection = None;
         self.creating_selection = None;
         self.selection_undo.clear();
-        self.pan = egui::Vec2::ZERO;
+        self.adjust_zoom();
         self.mark_full();
+    }
+
+    /// Fits the image height to the viewport.
+    ///
+    /// Centered when the scaled image also fits the viewport width; otherwise
+    /// aligned to the top-left.
+    pub fn adjust_zoom(&mut self) {
+        let (width, height) = (self.document.width(), self.document.height());
+        if self.viewport_size.y > 0.0 && height > 0 {
+            let magnification =
+                (self.viewport_size.y / height as f32).clamp(MIN_MAGNIFICATION, MAX_MAGNIFICATION);
+            self.magnification = magnification;
+        }
+        let scaled = egui::vec2(
+            width as f32 * self.magnification,
+            height as f32 * self.magnification,
+        );
+        self.pan = if scaled.x <= self.viewport_size.x {
+            (self.viewport_size - scaled) / 2.0
+        } else {
+            egui::Vec2::ZERO
+        };
+    }
+
+    /// Records the canvas viewport size (used for the initial zoom on open).
+    pub fn set_viewport_size(&mut self, size: egui::Vec2) {
+        self.viewport_size = size;
+        // On the first frame with a known viewport, fit the default sheet.
+        if self.pending_adjust_zoom && size.y > 0.0 {
+            self.adjust_zoom();
+            self.pending_adjust_zoom = false;
+        }
     }
 
     /// Saves to the current file, or asks for a location if there is none.

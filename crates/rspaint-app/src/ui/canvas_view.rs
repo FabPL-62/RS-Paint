@@ -28,6 +28,7 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     }
 
     let viewport_size = ui.available_size();
+    app.set_viewport_size(viewport_size);
     let (viewport_rect, response) =
         ui.allocate_exact_size(viewport_size, egui::Sense::click_and_drag());
 
