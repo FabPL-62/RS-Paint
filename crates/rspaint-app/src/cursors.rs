@@ -40,6 +40,7 @@ pub struct CursorSet {
     eye_dropper: Cursor,
     magnifier: Cursor,
     airbrush: Cursor,
+    magic_wand: Cursor,
 }
 
 impl CursorSet {
@@ -88,6 +89,12 @@ impl CursorSet {
                 include_bytes!("../assets/cursors/airbrush.png"),
                 [7.0, 22.0],
             ),
+            magic_wand: load(
+                ctx,
+                "mwand",
+                include_bytes!("../assets/cursors/mwand.png"),
+                [10.0, 10.0],
+            ),
         }
     }
 
@@ -102,6 +109,7 @@ impl CursorSet {
             Tool::Magnifier => &self.magnifier,
             Tool::Pencil => &self.pencil,
             Tool::Airbrush => &self.airbrush,
+            Tool::MagicWand => &self.magic_wand,
             Tool::Brush | Tool::SelectionBrush => &self.precise_dotted,
             _ => &self.precise,
         }
