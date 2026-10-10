@@ -46,8 +46,17 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     // the system cursor shows the matching resize icon.
     let visible_canvas = canvas_rect.intersect(viewport_rect);
     let cursor_pos = ui.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.interact_pos()));
-    let hovered_handle = cursor_pos.and_then(|pos| hovered_resize_handle(canvas_rect, pos));
-    let over_canvas = cursor_pos.is_some_and(|pos| visible_canvas.contains(pos));
+    // When a popup (e.g. the color picker) is above the canvas, keep the system
+    // pointer visible instead of hiding it behind the popup.
+    let occluded = cursor_pos
+        .and_then(|pos| ui.ctx().layer_id_at(pos))
+        .is_some_and(|layer| layer != ui.layer_id());
+    let hovered_handle = if occluded {
+        None
+    } else {
+        cursor_pos.and_then(|pos| hovered_resize_handle(canvas_rect, pos))
+    };
+    let over_canvas = !occluded && cursor_pos.is_some_and(|pos| visible_canvas.contains(pos));
     if let Some(handle) = hovered_handle {
         ui.ctx().set_cursor_icon(handle_cursor(handle));
     } else if over_canvas {
