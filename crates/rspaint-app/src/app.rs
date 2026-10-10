@@ -251,6 +251,8 @@ pub struct PaintApp {
     pub brush_size: u32,
     /// Eraser size.
     pub eraser_size: u32,
+    /// Eraser shape (circle or square).
+    pub eraser_shape: BrushShape,
     /// Airbrush spray radius.
     pub airbrush_size: u32,
     /// Pencil size.
@@ -431,6 +433,7 @@ impl PaintApp {
             brush_shape: BrushShape::Circle,
             brush_size: 4,
             eraser_size: 8,
+            eraser_shape: BrushShape::Square,
             airbrush_size: 9,
             pencil_size: 1,
             stroke_size: 1,
@@ -539,6 +542,10 @@ impl PaintApp {
                 BrushShape::Circle => 1,
                 BrushShape::Diagonal => 2,
                 BrushShape::ReverseDiagonal => 3,
+            },
+            Tool::Eraser => match self.eraser_shape {
+                BrushShape::Circle => 1,
+                _ => 0,
             },
             _ => 0,
         };
@@ -2418,7 +2425,7 @@ impl PaintApp {
                 draw_line(&mut self.document.buffer, from, to, &brush, color);
             }
             Tool::Eraser => {
-                let brush = Brush::new(BrushShape::Square, self.eraser_size);
+                let brush = Brush::new(self.eraser_shape, self.eraser_size);
                 if self
                     .stroke
                     .as_ref()
