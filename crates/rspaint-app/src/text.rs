@@ -166,6 +166,34 @@ pub fn draw_text(
     (lines.len() as f32 * line_height).ceil() as i32
 }
 
+/// The caret line at the end of `text`, in text space: `(x, top, height)`.
+///
+/// `x` is the horizontal position after the last character, `top` the top of
+/// the last line and `height` the line height, all relative to the text origin.
+pub fn caret(fonts: &FontSet, style: TextStyle, wrap_width: i32, text: &str) -> (i32, i32, i32) {
+    let font = fonts.font(style.family);
+    let scaled = font.as_scaled(PxScale::from(style.size));
+    let line_height = (scaled.height() + scaled.line_gap()).ceil().max(1.0) as i32;
+    let measure = |s: &str| -> f32 {
+        let mut width = 0.0;
+        let mut prev = None;
+        for c in s.chars() {
+            let id = scaled.glyph_id(c);
+            if let Some(p) = prev {
+                width += scaled.kern(p, id);
+            }
+            width += scaled.h_advance(id);
+            prev = Some(id);
+        }
+        width
+    };
+    let lines = wrap_text(text, wrap_width, &measure);
+    let last = lines.last().map(String::as_str).unwrap_or("");
+    let x = measure(last).ceil() as i32;
+    let top = lines.len().saturating_sub(1) as i32 * line_height;
+    (x, top, line_height)
+}
+
 /// Splits `text` into lines, wrapping words to `wrap_width` when positive.
 fn wrap_text(text: &str, wrap_width: i32, measure: &impl Fn(&str) -> f32) -> Vec<String> {
     let mut lines = Vec::new();

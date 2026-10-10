@@ -298,8 +298,8 @@ pub struct PaintApp {
     pub text_vertical: bool,
     /// Text tool option: transparent background.
     pub text_transparent: bool,
-    /// Whether the text editor should grab keyboard focus next frame.
-    text_focus: bool,
+    /// Pre-text copy of the canvas, restored on each live preview.
+    text_base: Option<PixelBuffer>,
     /// Cached outline of the in-progress Selection Brush mask.
     sel_brush_boundary: Vec<rspaint_core::selection::BoundarySegment>,
     /// Cached highlight runs of the in-progress Selection Brush mask.
@@ -428,7 +428,7 @@ impl PaintApp {
             text_italic: false,
             text_vertical: false,
             text_transparent: true,
-            text_focus: false,
+            text_base: None,
             ctrl_down: false,
             ctrl_tap_used: false,
             show_history: false,
@@ -758,30 +758,49 @@ impl PaintApp {
         self.text_box.map(|b| (b.x, b.y, b.width, b.height))
     }
 
-    /// The active box's options: `(family, size, bold, italic, vertical, transparent)`.
-    pub fn text_box_options(
-        &self,
-    ) -> Option<(crate::text::FontFamily, f32, bool, bool, bool, bool)> {
-        self.text_box.map(|b| {
-            (
-                b.family,
-                b.size,
-                b.bold,
-                b.italic,
-                b.vertical,
-                b.transparent,
-            )
-        })
+    /// Appends typed characters to the active box.
+    pub fn text_type(&mut self, text: &str) {
+        if self.text_box.is_some() {
+            self.text_buffer.push_str(text);
+        }
     }
 
-    /// The editable text buffer of the active box.
-    pub fn text_buffer_mut(&mut self) -> &mut String {
-        &mut self.text_buffer
+    /// Deletes the last character of the active box.
+    pub fn text_backspace(&mut self) {
+        if self.text_box.is_some() {
+            self.text_buffer.pop();
+        }
     }
 
-    /// Returns and clears the pending editor focus request.
-    pub fn take_text_focus(&mut self) -> bool {
-        std::mem::take(&mut self.text_focus)
+    /// Inserts a line break into the active box.
+    pub fn text_newline(&mut self) {
+        if self.text_box.is_some() {
+            self.text_buffer.push('\n');
+        }
+    }
+
+    /// The caret line (box-relative, in image pixels) at the end of the text.
+    pub fn text_caret_segment(&self) -> Option<((f32, f32), (f32, f32))> {
+        let text_box = self.text_box?;
+        let style = crate::text::TextStyle {
+            family: text_box.family,
+            size: text_box.size,
+            bold: text_box.bold,
+            italic: text_box.italic,
+        };
+        if text_box.vertical {
+            let (x, top, height) =
+                crate::text::caret(&self.fonts, style, text_box.height, &self.text_buffer);
+            let x0 = (text_box.width - 1 - top - height) as f32;
+            let x1 = (text_box.width - 1 - top) as f32;
+            let y = x as f32;
+            Some(((x0, y), (x1, y)))
+        } else {
+            let (x, top, height) =
+                crate::text::caret(&self.fonts, style, text_box.width, &self.text_buffer);
+            let cx = x as f32;
+            Some(((cx, top as f32), (cx, (top + height) as f32)))
+        }
     }
 
     /// The rectangle being created by dragging, if any.
@@ -821,7 +840,7 @@ impl PaintApp {
 
     fn open_text_box(&mut self, x: i32, y: i32, width: i32, height: i32) {
         self.text_buffer.clear();
-        self.text_focus = true;
+        self.text_base = Some(self.document.buffer.clone());
         self.text_box = Some(TextBox {
             x,
             y,
@@ -845,21 +864,26 @@ impl PaintApp {
         }
     }
 
-    /// Commits the active text box onto the canvas.
-    pub fn commit_text(&mut self) {
-        let Some(text_box) = self.text_box.take() else {
+    /// Restores the pre-text canvas, then renders the current text on top.
+    pub fn render_text_preview(&mut self) {
+        let Some(text_box) = self.text_box else {
             return;
         };
-        let text = std::mem::take(&mut self.text_buffer);
-        if text.trim().is_empty() {
-            return;
+        if let Some(base) = self.text_base.as_ref() {
+            let (width, height) = (self.document.width(), self.document.height());
+            self.document
+                .buffer
+                .copy_region_from(base, 0, 0, width, height);
         }
-        let style = crate::text::TextStyle {
-            family: text_box.family,
-            size: text_box.size,
-            bold: text_box.bold,
-            italic: text_box.italic,
-        };
+        if !self.text_buffer.trim().is_empty() {
+            let text = self.text_buffer.clone();
+            self.draw_text_box(text_box, &text);
+        }
+        self.mark_full();
+    }
+
+    /// Rasterizes `text` into the canvas within `text_box`.
+    fn draw_text_box(&mut self, text_box: TextBox, text: &str) {
         if !text_box.transparent {
             fill_rectangle(
                 &mut self.document.buffer,
@@ -871,33 +895,76 @@ impl PaintApp {
                 self.background,
             );
         }
+        let style = crate::text::TextStyle {
+            family: text_box.family,
+            size: text_box.size,
+            bold: text_box.bold,
+            italic: text_box.italic,
+        };
         let width = text_box.width.max(1) as u32;
         let height = text_box.height.max(1) as u32;
-        let mut temp = PixelBuffer::transparent(width, height);
-        crate::text::draw_text(
-            &self.fonts,
-            &mut temp,
-            (0, 0),
-            text_box.width,
-            &text,
-            style,
-            self.foreground,
-        );
         if text_box.vertical {
+            // Vertical text: lay it out along the box height, then rotate 90°.
+            let mut temp = PixelBuffer::transparent(height, width);
+            crate::text::draw_text(
+                &self.fonts,
+                &mut temp,
+                (0, 0),
+                text_box.height,
+                text,
+                style,
+                self.foreground,
+            );
             let rotated = crate::text::rotate_90_cw(&temp);
             crate::text::composite(&mut self.document.buffer, &rotated, text_box.x, text_box.y);
         } else {
+            let mut temp = PixelBuffer::transparent(width, height);
+            crate::text::draw_text(
+                &self.fonts,
+                &mut temp,
+                (0, 0),
+                text_box.width,
+                text,
+                style,
+                self.foreground,
+            );
             crate::text::composite(&mut self.document.buffer, &temp, text_box.x, text_box.y);
         }
-        self.mark_full();
-        self.commit("Text");
+    }
+
+    /// Commits the active text box onto the canvas.
+    pub fn commit_text(&mut self) {
+        let Some(text_box) = self.text_box.take() else {
+            return;
+        };
+        let text = std::mem::take(&mut self.text_buffer);
+        if let Some(base) = self.text_base.take() {
+            let (width, height) = (self.document.width(), self.document.height());
+            self.document
+                .buffer
+                .copy_region_from(&base, 0, 0, width, height);
+        }
+        if !text.trim().is_empty() {
+            self.draw_text_box(text_box, &text);
+            self.mark_full();
+            self.commit("Text");
+        } else {
+            self.mark_full();
+        }
     }
 
     /// Discards the active text box and any in-progress box creation.
     pub fn cancel_text(&mut self) {
+        if let Some(base) = self.text_base.take() {
+            let (width, height) = (self.document.width(), self.document.height());
+            self.document
+                .buffer
+                .copy_region_from(&base, 0, 0, width, height);
+        }
         self.text_box = None;
         self.text_buffer.clear();
         self.text_creating = None;
+        self.mark_full();
     }
 
     /// The outline of the active selection in canvas coordinates.

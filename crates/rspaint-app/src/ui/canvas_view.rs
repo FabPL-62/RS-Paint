@@ -15,7 +15,6 @@ use egui::{PointerButton, Pos2, Vec2};
 
 use crate::app::{to_color32, PaintApp, SelectionOutline, MAX_MAGNIFICATION, MIN_MAGNIFICATION};
 use crate::canvas_renderer::CanvasCallback;
-use crate::text::FontFamily;
 use crate::tools::Tool;
 
 /// Draws the current document and routes pointer input to the active tool.
@@ -168,7 +167,31 @@ fn handle_text(
     let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
 
     if app.has_text_box() {
-        // A click outside the box (the editor covers it) commits the text.
+        // Capture typing: append characters, delete with Backspace, newline
+        // with Enter. (Global single-key shortcuts are suppressed meanwhile.)
+        let (typed, backspace, newline) = ui.ctx().input_mut(|i| {
+            let mut typed = String::new();
+            for event in &i.events {
+                if let egui::Event::Text(text) = event {
+                    typed.push_str(text);
+                }
+            }
+            let backspace = i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace);
+            let newline = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            (typed, backspace, newline)
+        });
+        if !typed.is_empty() {
+            app.text_type(&typed);
+        }
+        if backspace {
+            app.text_backspace();
+        }
+        if newline {
+            app.text_newline();
+        }
+        app.render_text_preview();
+
+        // A click outside the box commits the text.
         if response.clicked() || response.secondary_clicked() {
             app.commit_text();
         }
@@ -237,21 +260,12 @@ fn paint_text_overlay(
     let Some((x, y, width, height)) = app.text_box_rect() else {
         return;
     };
-    let Some((family, size, _bold, _italic, _vertical, transparent)) = app.text_box_options()
-    else {
-        return;
-    };
 
     let min = canvas_rect.min + egui::vec2(x as f32 * magnification, y as f32 * magnification);
     let rect = egui::Rect::from_min_size(
         min,
         egui::vec2(width as f32 * magnification, height as f32 * magnification),
     );
-
-    if !transparent {
-        ui.painter()
-            .rect_filled(rect, 0.0, to_color32(app.background));
-    }
     ui.painter().rect_stroke(
         rect,
         0.0,
@@ -259,23 +273,15 @@ fn paint_text_overlay(
         egui::StrokeKind::Outside,
     );
 
-    let egui_family = match family {
-        FontFamily::Mono => egui::FontFamily::Monospace,
-        _ => egui::FontFamily::Proportional,
-    };
-    let font_id = egui::FontId::new(size * magnification, egui_family);
-    let text_color = to_color32(app.foreground);
-    let text = app.text_buffer_mut();
-    let response = ui.put(
-        rect,
-        egui::TextEdit::multiline(text)
-            .font(font_id)
-            .text_color(text_color)
-            .frame(false)
-            .desired_width(f32::INFINITY),
-    );
-    if app.take_text_focus() {
-        response.request_focus();
+    // Blinking caret at the end of the text.
+    let time = ui.input(|i| i.time);
+    if (time * 2.0) as i64 % 2 == 0 {
+        if let Some((a, b)) = app.text_caret_segment() {
+            let p0 = min + egui::vec2(a.0 * magnification, a.1 * magnification);
+            let p1 = min + egui::vec2(b.0 * magnification, b.1 * magnification);
+            ui.painter()
+                .line_segment([p0, p1], egui::Stroke::new(1.0, to_color32(app.foreground)));
+        }
     }
     ui.ctx().request_repaint();
 }
