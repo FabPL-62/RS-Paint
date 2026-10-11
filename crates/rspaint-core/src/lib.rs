@@ -22,6 +22,6 @@ pub mod transform;
 
 pub use brush::{Brush, BrushShape};
 pub use buffer::PixelBuffer;
-pub use color::Color;
+pub use color::{BlendMode, Color};
 pub use document::Document;
 pub use history::{History, HistoryNode, NodeId};

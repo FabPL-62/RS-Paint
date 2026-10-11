@@ -39,6 +39,21 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                 if ui.button("Capture").clicked() {
                     app.capture_colors();
                 }
+                ui.horizontal(|ui| {
+                    ui.label("Opacity");
+                    let mut percent = (f32::from(app.foreground.a) / 255.0 * 100.0).round();
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut percent)
+                                .range(0.0..=100.0)
+                                .suffix("%"),
+                        )
+                        .changed()
+                    {
+                        app.foreground.a =
+                            (percent / 100.0 * 255.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                });
             });
         });
         ui.add_space(2.0);

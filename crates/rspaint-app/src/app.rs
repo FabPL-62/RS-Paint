@@ -3,12 +3,14 @@
 use eframe::egui;
 use egui::{Color32, Key, Modifiers, PointerButton};
 use rspaint_core::draw::{
-    draw_bezier, draw_ellipse, draw_line, draw_quadratic_curve, draw_rectangle,
+    draw_bezier, draw_ellipse, draw_line, draw_line_masked, draw_quadratic_curve, draw_rectangle,
     draw_rounded_rectangle, erase_line, fill_ellipse, fill_rectangle, fill_rounded_rectangle,
     walk_dense_line, walk_line,
 };
 use rspaint_core::fill::flood_fill;
-use rspaint_core::{palette, transform, Brush, BrushShape, Color, Document, History, PixelBuffer};
+use rspaint_core::{
+    palette, transform, BlendMode, Brush, BrushShape, Color, Document, History, PixelBuffer,
+};
 
 use crate::canvas_renderer::{CanvasRenderer, Uniforms, Upload};
 use crate::tools::Tool;
@@ -309,6 +311,8 @@ pub struct ColorPicker {
     pub sat: f32,
     /// Value (`0..=1`).
     pub val: f32,
+    /// Opacity (`0..=1`).
+    pub alpha: f32,
     /// Where to place the popup, in screen coordinates.
     pub anchor: egui::Pos2,
     /// Set for the frame the popup opens, so the opening click doesn't close it.
@@ -364,6 +368,8 @@ pub struct PaintApp {
     pub round_radius: u32,
     /// Whether shape tools fill their interior with the background color.
     pub fill_style: ShapeFill,
+    /// How paint is applied to pixels: blend (default) or replace.
+    pub paint_blend: BlendMode,
     /// Opacity of the pixel grid, as a percentage (0-100).
     pub grid_opacity: u32,
     /// Outliner: border thickness in pixels.
@@ -514,6 +520,8 @@ pub struct PaintApp {
     /// The pointer position in image coordinates, if over the canvas.
     pub pointer: Option<(i32, i32)>,
     stroke: Option<Stroke>,
+    /// Pixels already painted during the current freehand stroke.
+    stroke_painted: Vec<bool>,
     rng: Rng,
     /// Set when the whole texture must be re-uploaded.
     canvas_dirty: bool,
@@ -562,6 +570,7 @@ impl PaintApp {
             stroke_size: 1,
             round_radius: 10,
             fill_style: ShapeFill::Outline,
+            paint_blend: BlendMode::Blend,
             grid_opacity: 20,
             outliner_size: 1,
             outliner_concave: false,
@@ -638,6 +647,7 @@ impl PaintApp {
             last_title: String::new(),
             pointer: None,
             stroke: None,
+            stroke_painted: Vec::new(),
             rng: Rng(0x1234_5678),
             canvas_dirty: true,
             dirty_rect: None,
@@ -892,14 +902,19 @@ impl PaintApp {
         let stroke = self.polygon_stroke;
         let fill = self.polygon_fill;
         self.note_used_color(stroke);
-        let brush = Brush::new(BrushShape::Square, self.stroke_size);
+        let brush = Brush::new(BrushShape::Square, self.stroke_size).with_blend(self.paint_blend);
         let interior = match self.fill_style {
             ShapeFill::Outline => None,
             ShapeFill::FilledWithOutline => Some(fill),
             ShapeFill::FilledOnly => Some(stroke),
         };
         if let Some(color) = interior {
-            rspaint_core::draw::fill_polygon(&mut self.document.buffer, &points, color);
+            rspaint_core::draw::fill_polygon(
+                &mut self.document.buffer,
+                &points,
+                color,
+                self.paint_blend,
+            );
         }
         if self.fill_style != ShapeFill::FilledOnly {
             rspaint_core::draw::draw_polyline(
@@ -976,7 +991,7 @@ impl PaintApp {
         self.document
             .buffer
             .copy_region_from(base, 0, 0, width, height);
-        let brush = Brush::new(BrushShape::Square, self.stroke_size);
+        let brush = Brush::new(BrushShape::Square, self.stroke_size).with_blend(self.paint_blend);
         let color = self.foreground;
         let points = self.curve_points.clone();
         let buffer = &mut self.document.buffer;
@@ -1140,6 +1155,7 @@ impl PaintApp {
                     text_box.y + text_box.height - 1,
                 ),
                 self.background,
+                BlendMode::Replace,
             );
         }
         let style = crate::text::TextStyle {
@@ -1209,6 +1225,7 @@ impl PaintApp {
             hue,
             sat,
             val,
+            alpha: f32::from(color.a) / 255.0,
             anchor,
             just_opened: true,
         });
@@ -1229,7 +1246,9 @@ impl PaintApp {
         let Some(picker) = self.color_picker.as_ref() else {
             return;
         };
-        let color = Color::from_hsv(picker.hue, picker.sat, picker.val);
+        let base = Color::from_hsv(picker.hue, picker.sat, picker.val);
+        let alpha = (picker.alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let color = Color::rgba(base.r, base.g, base.b, alpha);
         let target = picker.target;
         match target {
             ColorTarget::Foreground => self.foreground = color,
@@ -3105,7 +3124,9 @@ impl PaintApp {
                         && y >= 0
                         && self.document.buffer.get(x as u32, y as u32) != Some(color)
                     {
-                        self.document.buffer.set(x as u32, y as u32, color);
+                        self.document
+                            .buffer
+                            .paint(x as u32, y as u32, color, self.paint_blend);
                         changed = true;
                     }
                 }
@@ -3368,6 +3389,9 @@ impl PaintApp {
                 base: None,
                 preview_rect: None,
             });
+            // Fresh per-stroke mask so a single pass paints each pixel once.
+            let count = (self.document.width() * self.document.height()) as usize;
+            self.stroke_painted = vec![false; count];
             self.draw_freehand(p, p, color);
             self.mark_segment(p, p, self.tool_radius());
         }
@@ -3455,21 +3479,44 @@ impl PaintApp {
     fn draw_freehand(&mut self, from: (i32, i32), to: (i32, i32), color: Color) {
         match self.tool {
             Tool::Pencil => {
-                let brush = Brush::new(BrushShape::Square, self.pencil_size);
-                draw_line(&mut self.document.buffer, from, to, &brush, color);
+                let brush =
+                    Brush::new(BrushShape::Square, self.pencil_size).with_blend(self.paint_blend);
+                let width = self.document.width();
+                draw_line_masked(
+                    &mut self.document.buffer,
+                    from,
+                    to,
+                    &brush,
+                    color,
+                    &mut self.stroke_painted,
+                    width,
+                );
             }
             Tool::Brush => {
-                let brush = Brush::new(self.brush_shape, self.brush_size);
-                draw_line(&mut self.document.buffer, from, to, &brush, color);
+                let brush =
+                    Brush::new(self.brush_shape, self.brush_size).with_blend(self.paint_blend);
+                let width = self.document.width();
+                draw_line_masked(
+                    &mut self.document.buffer,
+                    from,
+                    to,
+                    &brush,
+                    color,
+                    &mut self.stroke_painted,
+                    width,
+                );
             }
             Tool::Eraser => {
-                let brush = Brush::new(self.eraser_shape, self.eraser_size);
+                let brush =
+                    Brush::new(self.eraser_shape, self.eraser_size).with_blend(self.paint_blend);
                 if self
                     .stroke
                     .as_ref()
                     .is_some_and(|stroke| stroke.color_eraser)
                 {
-                    let erase_to = self.eraser_color();
+                    // Color Eraser replaces the foreground color with the
+                    // background color (even in transparent mode).
+                    let erase_to = self.background;
                     let erase_from = self.foreground;
                     erase_line(
                         &mut self.document.buffer,
@@ -3481,7 +3528,16 @@ impl PaintApp {
                     );
                 } else {
                     let color = self.eraser_color();
-                    draw_line(&mut self.document.buffer, from, to, &brush, color);
+                    let width = self.document.width();
+                    draw_line_masked(
+                        &mut self.document.buffer,
+                        from,
+                        to,
+                        &brush,
+                        color,
+                        &mut self.stroke_painted,
+                        width,
+                    );
                 }
             }
             Tool::Airbrush => self.spray(to, color),
@@ -3502,13 +3558,15 @@ impl PaintApp {
             let x = at.0 + dx;
             let y = at.1 + dy;
             if x >= 0 && y >= 0 {
-                self.document.buffer.set(x as u32, y as u32, color);
+                self.document
+                    .buffer
+                    .paint(x as u32, y as u32, color, self.paint_blend);
             }
         }
     }
 
     fn draw_shape(&mut self, a: (i32, i32), b: (i32, i32), color: Color, fill: Color) {
-        let brush = Brush::new(BrushShape::Square, self.stroke_size);
+        let brush = Brush::new(BrushShape::Square, self.stroke_size).with_blend(self.paint_blend);
         let fill_style = self.fill_style;
         // Whether to fill the interior, and with which color.
         let interior = match fill_style {
@@ -3521,7 +3579,7 @@ impl PaintApp {
             Tool::Line => draw_line(&mut self.document.buffer, a, b, &brush, color),
             Tool::Rectangle => {
                 if let Some(interior) = interior {
-                    fill_rectangle(&mut self.document.buffer, a, b, interior);
+                    fill_rectangle(&mut self.document.buffer, a, b, interior, self.paint_blend);
                 }
                 if outline {
                     draw_rectangle(&mut self.document.buffer, a, b, &brush, color);
@@ -3529,7 +3587,7 @@ impl PaintApp {
             }
             Tool::Ellipse => {
                 if let Some(interior) = interior {
-                    fill_ellipse(&mut self.document.buffer, a, b, interior);
+                    fill_ellipse(&mut self.document.buffer, a, b, interior, self.paint_blend);
                 }
                 if outline {
                     draw_ellipse(&mut self.document.buffer, a, b, &brush, color);
@@ -3538,7 +3596,14 @@ impl PaintApp {
             Tool::RoundedRectangle => {
                 let radius = self.round_radius as i32;
                 if let Some(interior) = interior {
-                    fill_rounded_rectangle(&mut self.document.buffer, a, b, radius, interior);
+                    fill_rounded_rectangle(
+                        &mut self.document.buffer,
+                        a,
+                        b,
+                        radius,
+                        interior,
+                        self.paint_blend,
+                    );
                 }
                 if outline {
                     draw_rounded_rectangle(&mut self.document.buffer, a, b, radius, &brush, color);
@@ -3603,7 +3668,14 @@ impl PaintApp {
             Tool::Fill => {
                 let color = self.active_color(button);
                 self.note_used_color(color);
-                flood_fill(&mut self.document.buffer, p.0, p.1, color, !shift);
+                flood_fill(
+                    &mut self.document.buffer,
+                    p.0,
+                    p.1,
+                    color,
+                    !shift,
+                    self.paint_blend,
+                );
                 self.commit("Fill With Color");
                 self.mark_full();
             }

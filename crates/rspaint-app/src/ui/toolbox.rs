@@ -1,7 +1,7 @@
 //! The tool box and tool options on the left.
 
 use eframe::egui;
-use rspaint_core::{BrushShape, Color};
+use rspaint_core::{BlendMode, BrushShape, Color};
 
 use crate::app::{to_color32, BorderPlacement, ColorTarget, FlipRotate, PaintApp, ShapeFill};
 use crate::text::FontFamily;
@@ -212,6 +212,12 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
         _ => {
             ui.label("-");
         }
+    }
+    if app.tool.uses_blend_mode() {
+        ui.separator();
+        ui.label("Mode");
+        ui.radio_value(&mut app.paint_blend, BlendMode::Blend, "Blend");
+        ui.radio_value(&mut app.paint_blend, BlendMode::Replace, "Replace");
     }
 }
 

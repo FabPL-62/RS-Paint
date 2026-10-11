@@ -1,7 +1,7 @@
 //! Flood fill operations (the Fill With Color tool).
 
 use crate::buffer::PixelBuffer;
-use crate::color::Color;
+use crate::color::{BlendMode, Color};
 
 /// Replaces every pixel equal to `from` with `to`.
 ///
@@ -26,7 +26,14 @@ pub fn replace_color(buffer: &mut PixelBuffer, from: Color, to: Color) -> usize 
 ///
 /// When `contiguous` is false, every matching pixel in the image is replaced
 /// instead (JS Paint's Shift+fill behavior).
-pub fn flood_fill(buffer: &mut PixelBuffer, x: i32, y: i32, new_color: Color, contiguous: bool) {
+pub fn flood_fill(
+    buffer: &mut PixelBuffer,
+    x: i32,
+    y: i32,
+    new_color: Color,
+    contiguous: bool,
+    blend: BlendMode,
+) {
     if x < 0 || y < 0 {
         return;
     }
@@ -38,23 +45,37 @@ pub fn flood_fill(buffer: &mut PixelBuffer, x: i32, y: i32, new_color: Color, co
         Some(color) => color,
         None => return,
     };
-    if target == new_color {
+    if target == new_color && blend == BlendMode::Replace {
         return;
     }
     if !contiguous {
-        replace_color(buffer, target, new_color);
+        for py in 0..height {
+            for px in 0..width {
+                if buffer.get(px as u32, py as u32) == Some(target) {
+                    buffer.paint(px as u32, py as u32, new_color, blend);
+                }
+            }
+        }
         return;
     }
 
+    // Track visited pixels: in blend mode painting may not change a pixel, so
+    // relying on the color change alone could loop forever.
+    let mut visited = vec![false; (width * height) as usize];
     let mut stack = vec![(x, y)];
     while let Some((px, py)) = stack.pop() {
         if px < 0 || py < 0 || px >= width || py >= height {
             continue;
         }
+        let index = (py * width + px) as usize;
+        if visited[index] {
+            continue;
+        }
         if buffer.get(px as u32, py as u32) != Some(target) {
             continue;
         }
-        buffer.set(px as u32, py as u32, new_color);
+        visited[index] = true;
+        buffer.paint(px as u32, py as u32, new_color, blend);
         stack.push((px + 1, py));
         stack.push((px - 1, py));
         stack.push((px, py + 1));
@@ -73,7 +94,14 @@ mod tests {
         for y in 0..5 {
             buffer.set(2, y, Color::BLACK);
         }
-        flood_fill(&mut buffer, 0, 0, Color::rgb(255, 0, 0), true);
+        flood_fill(
+            &mut buffer,
+            0,
+            0,
+            Color::rgb(255, 0, 0),
+            true,
+            BlendMode::Blend,
+        );
         assert_eq!(buffer.get(0, 0), Some(Color::rgb(255, 0, 0)));
         assert_eq!(buffer.get(1, 4), Some(Color::rgb(255, 0, 0)));
         assert_eq!(buffer.get(3, 0), Some(Color::WHITE), "other side untouched");
@@ -86,7 +114,14 @@ mod tests {
         for y in 0..5 {
             buffer.set(2, y, Color::BLACK);
         }
-        flood_fill(&mut buffer, 0, 0, Color::rgb(0, 0, 255), false);
+        flood_fill(
+            &mut buffer,
+            0,
+            0,
+            Color::rgb(0, 0, 255),
+            false,
+            BlendMode::Blend,
+        );
         assert_eq!(buffer.get(3, 0), Some(Color::rgb(0, 0, 255)));
         assert_eq!(buffer.get(4, 4), Some(Color::rgb(0, 0, 255)));
         assert_eq!(buffer.get(2, 0), Some(Color::BLACK));
@@ -95,7 +130,7 @@ mod tests {
     #[test]
     fn filling_with_same_color_is_noop() {
         let mut buffer = PixelBuffer::new(3, 3, Color::WHITE);
-        flood_fill(&mut buffer, 0, 0, Color::WHITE, true);
+        flood_fill(&mut buffer, 0, 0, Color::WHITE, true, BlendMode::Blend);
         assert_eq!(buffer.get(0, 0), Some(Color::WHITE));
     }
 }

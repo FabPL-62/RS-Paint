@@ -20,6 +20,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
     let mut hue = picker.hue;
     let mut sat = picker.sat;
     let mut val = picker.val;
+    let mut alpha = picker.alpha;
     let anchor = picker.anchor;
     let just_opened = picker.just_opened;
     let target = picker.target;
@@ -89,6 +90,11 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                 );
 
                 ui.horizontal(|ui| {
+                    ui.label("Opacity");
+                    ui.add(egui::Slider::new(&mut alpha, 0.0..=1.0).show_value(false));
+                    ui.label(format!("{}%", (alpha * 100.0).round() as i32));
+                });
+                ui.horizontal(|ui| {
                     let color = Color::from_hsv(hue, sat, val);
                     let (preview, _) =
                         ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
@@ -134,6 +140,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
             picker.hue = hue;
             picker.sat = sat;
             picker.val = val;
+            picker.alpha = alpha;
             picker.just_opened = false;
         }
         app.apply_color_picker();

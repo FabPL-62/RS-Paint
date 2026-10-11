@@ -1,7 +1,7 @@
 //! Brush shapes and pixel stamping.
 
 use crate::buffer::PixelBuffer;
-use crate::color::Color;
+use crate::color::{BlendMode, Color};
 
 /// The shape of a brush tip.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -16,11 +16,12 @@ pub enum BrushShape {
     ReverseDiagonal,
 }
 
-/// A brush tip: a shape and a pixel size.
+/// A brush tip: a shape, a pixel size and a blend mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Brush {
     pub shape: BrushShape,
     pub size: u32,
+    pub blend: BlendMode,
 }
 
 impl Brush {
@@ -28,6 +29,7 @@ impl Brush {
     pub const PENCIL: Self = Self {
         shape: BrushShape::Square,
         size: 1,
+        blend: BlendMode::Blend,
     };
 
     /// Creates a brush with the given shape and size (clamped to at least 1).
@@ -35,7 +37,14 @@ impl Brush {
         Self {
             shape,
             size: size.max(1),
+            blend: BlendMode::Blend,
         }
+    }
+
+    /// Sets the brush's blend mode.
+    pub fn with_blend(mut self, blend: BlendMode) -> Self {
+        self.blend = blend;
+        self
     }
 
     /// Calls `f` for every pixel of the brush footprint centered at `(cx, cy)`.
@@ -86,11 +95,33 @@ impl Brush {
         }
     }
 
-    /// Stamps the brush tip centered at `(cx, cy)`, overwriting pixels.
+    /// Stamps the brush tip centered at `(cx, cy)` using the brush's blend mode.
     pub fn stamp(&self, buffer: &mut PixelBuffer, cx: i32, cy: i32, color: Color) {
         self.for_each_pixel(cx, cy, |px, py| {
             if px >= 0 && py >= 0 {
-                buffer.set(px as u32, py as u32, color);
+                buffer.paint(px as u32, py as u32, color, self.blend);
+            }
+        });
+    }
+
+    /// Stamps the brush tip, painting each pixel at most once per `painted`
+    /// mask (used to keep a single freehand stroke from accumulating on itself).
+    pub fn stamp_masked(
+        &self,
+        buffer: &mut PixelBuffer,
+        painted: &mut [bool],
+        width: u32,
+        cx: i32,
+        cy: i32,
+        color: Color,
+    ) {
+        self.for_each_pixel(cx, cy, |px, py| {
+            if px >= 0 && py >= 0 && (px as u32) < width {
+                let index = py as usize * width as usize + px as usize;
+                if index < painted.len() && !painted[index] {
+                    painted[index] = true;
+                    buffer.paint(px as u32, py as u32, color, self.blend);
+                }
             }
         });
     }

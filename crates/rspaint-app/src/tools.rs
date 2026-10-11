@@ -121,6 +121,25 @@ impl Tool {
         matches!(self, Tool::Fill | Tool::PickColor | Tool::Magnifier)
     }
 
+    /// Drawing tools whose output respects the paint blend/replace mode.
+    pub fn uses_blend_mode(self) -> bool {
+        matches!(
+            self,
+            Tool::Pencil
+                | Tool::Brush
+                | Tool::Fill
+                | Tool::Airbrush
+                | Tool::Eraser
+                | Tool::Line
+                | Tool::Curve
+                | Tool::Rectangle
+                | Tool::Polygon
+                | Tool::Ellipse
+                | Tool::RoundedRectangle
+                | Tool::Outliner
+        )
+    }
+
     /// Drawing tools that allow a temporary color-pick with Ctrl/Alt.
     pub fn allows_color_pick(self) -> bool {
         matches!(

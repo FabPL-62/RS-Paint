@@ -5,7 +5,7 @@
 
 use crate::brush::Brush;
 use crate::buffer::PixelBuffer;
-use crate::color::Color;
+use crate::color::{BlendMode, Color};
 
 /// A point in image coordinates.
 pub type Point = (i32, i32);
@@ -74,6 +74,25 @@ pub fn walk_dense_line(a: Point, b: Point, mut f: impl FnMut(i32, i32)) {
 /// Draws a line from `a` to `b` with Bresenham's algorithm, stamping `brush`.
 ///
 /// Multi-pixel brushes use the dense variant to avoid gaps.
+/// Draws a line stamping `brush`, painting each pixel at most once per
+/// `painted` mask (for incremental freehand strokes).
+pub fn draw_line_masked(
+    buffer: &mut PixelBuffer,
+    a: Point,
+    b: Point,
+    brush: &Brush,
+    color: Color,
+    painted: &mut [bool],
+    width: u32,
+) {
+    let mut stamp = |x, y| brush.stamp_masked(buffer, painted, width, x, y, color);
+    if brush.size > 1 {
+        walk_dense_line(a, b, &mut stamp);
+    } else {
+        walk_line(a, b, &mut stamp);
+    }
+}
+
 pub fn draw_line(buffer: &mut PixelBuffer, a: Point, b: Point, brush: &Brush, color: Color) {
     if brush.size > 1 {
         walk_dense_line(a, b, |x, y| brush.stamp(buffer, x, y, color));
@@ -127,12 +146,13 @@ fn fill_region(
     corners: (Point, Point),
     contains: impl Fn(i32, i32) -> bool,
     color: Color,
+    blend: BlendMode,
 ) {
     let (x0, y0, x1, y1) = normalize(corners.0, corners.1);
     for y in y0..=y1 {
         for x in x0..=x1 {
             if contains(x, y) && x >= 0 && y >= 0 {
-                buffer.set(x as u32, y as u32, color);
+                buffer.paint(x as u32, y as u32, color, blend);
             }
         }
     }
@@ -188,9 +208,15 @@ pub fn draw_rectangle(buffer: &mut PixelBuffer, a: Point, b: Point, brush: &Brus
 }
 
 /// Draws a filled rectangle.
-pub fn fill_rectangle(buffer: &mut PixelBuffer, a: Point, b: Point, color: Color) {
+pub fn fill_rectangle(
+    buffer: &mut PixelBuffer,
+    a: Point,
+    b: Point,
+    color: Color,
+    blend: BlendMode,
+) {
     let (x0, y0, x1, y1) = normalize(a, b);
-    fill_region(buffer, (a, b), rect_contains(x0, y0, x1, y1), color);
+    fill_region(buffer, (a, b), rect_contains(x0, y0, x1, y1), color, blend);
 }
 
 /// Draws an ellipse outline within the given bounding box.
@@ -206,9 +232,15 @@ pub fn draw_ellipse(buffer: &mut PixelBuffer, a: Point, b: Point, brush: &Brush,
 }
 
 /// Draws a filled ellipse within the given bounding box.
-pub fn fill_ellipse(buffer: &mut PixelBuffer, a: Point, b: Point, color: Color) {
+pub fn fill_ellipse(buffer: &mut PixelBuffer, a: Point, b: Point, color: Color, blend: BlendMode) {
     let (x0, y0, x1, y1) = normalize(a, b);
-    fill_region(buffer, (a, b), ellipse_contains(x0, y0, x1, y1), color);
+    fill_region(
+        buffer,
+        (a, b),
+        ellipse_contains(x0, y0, x1, y1),
+        color,
+        blend,
+    );
 }
 
 /// Draws a rounded-rectangle outline.
@@ -237,6 +269,7 @@ pub fn fill_rounded_rectangle(
     b: Point,
     radius: i32,
     color: Color,
+    blend: BlendMode,
 ) {
     let (x0, y0, x1, y1) = normalize(a, b);
     fill_region(
@@ -244,6 +277,7 @@ pub fn fill_rounded_rectangle(
         (a, b),
         rounded_rect_contains(x0, y0, x1, y1, radius),
         color,
+        blend,
     );
 }
 
@@ -270,7 +304,12 @@ pub fn draw_polyline(
 }
 
 /// Fills a polygon using the even-odd rule at pixel centers.
-pub fn fill_polygon(buffer: &mut PixelBuffer, points: &[(i32, i32)], color: Color) {
+pub fn fill_polygon(
+    buffer: &mut PixelBuffer,
+    points: &[(i32, i32)],
+    color: Color,
+    blend: BlendMode,
+) {
     if points.len() < 3 {
         return;
     }
@@ -298,7 +337,7 @@ pub fn fill_polygon(buffer: &mut PixelBuffer, points: &[(i32, i32)], color: Colo
             let end = (crossings[k + 1] - 0.5).floor() as i32;
             for x in start..=end {
                 if x >= 0 && y >= 0 {
-                    buffer.set(x as u32, y as u32, color);
+                    buffer.paint(x as u32, y as u32, color, blend);
                 }
             }
             k += 2;
@@ -425,7 +464,7 @@ mod tests {
     fn fill_polygon_fills_interior_only() {
         let mut buffer = PixelBuffer::new(8, 8, Color::WHITE);
         let triangle = [(1, 1), (6, 1), (1, 6)];
-        fill_polygon(&mut buffer, &triangle, Color::BLACK);
+        fill_polygon(&mut buffer, &triangle, Color::BLACK, BlendMode::Blend);
         assert_eq!(buffer.get(2, 2), Some(Color::BLACK), "inside");
         assert_eq!(buffer.get(5, 5), Some(Color::WHITE), "outside");
     }
@@ -472,7 +511,7 @@ mod tests {
     #[test]
     fn filled_rectangle_is_solid() {
         let mut buffer = PixelBuffer::transparent(10, 10);
-        fill_rectangle(&mut buffer, (2, 2), (4, 4), Color::BLACK);
+        fill_rectangle(&mut buffer, (2, 2), (4, 4), Color::BLACK, BlendMode::Blend);
         assert_eq!(count_non_transparent(&buffer), 9);
     }
 
@@ -492,7 +531,13 @@ mod tests {
     #[test]
     fn filled_ellipse_is_solid_inside() {
         let mut buffer = PixelBuffer::transparent(20, 20);
-        fill_ellipse(&mut buffer, (2, 4), (16, 14), Color::BLACK);
+        fill_ellipse(
+            &mut buffer,
+            (2, 4),
+            (16, 14),
+            Color::BLACK,
+            BlendMode::Blend,
+        );
         assert_eq!(buffer.get(9, 9), Some(Color::BLACK));
         assert_eq!(buffer.get(0, 0), Some(Color::TRANSPARENT));
     }
@@ -500,7 +545,14 @@ mod tests {
     #[test]
     fn rounded_rectangle_clips_corners() {
         let mut buffer = PixelBuffer::transparent(20, 20);
-        fill_rounded_rectangle(&mut buffer, (0, 0), (19, 19), 4, Color::BLACK);
+        fill_rounded_rectangle(
+            &mut buffer,
+            (0, 0),
+            (19, 19),
+            4,
+            Color::BLACK,
+            BlendMode::Blend,
+        );
         assert_eq!(buffer.get(0, 0), Some(Color::TRANSPARENT), "corner clipped");
         assert_eq!(buffer.get(10, 10), Some(Color::BLACK), "center filled");
     }

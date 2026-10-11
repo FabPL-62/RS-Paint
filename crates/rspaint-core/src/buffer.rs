@@ -95,6 +95,21 @@ impl PixelBuffer {
         self.data[i..i + 4].copy_from_slice(&color.to_array());
     }
 
+    /// Paints `color` at `(x, y)` using the given blend mode.
+    ///
+    /// [`BlendMode::Blend`](crate::color::BlendMode::Blend) composites the color
+    /// over the existing pixel (source-over); `Replace` overwrites it.
+    pub fn paint(&mut self, x: u32, y: u32, color: Color, blend: crate::color::BlendMode) {
+        match blend {
+            crate::color::BlendMode::Blend => {
+                if let Some(dst) = self.get(x, y) {
+                    self.set(x, y, color.over(dst));
+                }
+            }
+            crate::color::BlendMode::Replace => self.set(x, y, color),
+        }
+    }
+
     /// Extracts a rectangular region as contiguous RGBA8 bytes.
     ///
     /// The region is clamped to the buffer bounds.

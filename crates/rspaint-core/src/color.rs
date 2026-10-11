@@ -9,6 +9,16 @@ pub struct Color {
     pub a: u8,
 }
 
+/// How a paint color is applied to a destination pixel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BlendMode {
+    /// Source-over alpha compositing (the default).
+    #[default]
+    Blend,
+    /// Overwrite the pixel, including its alpha.
+    Replace,
+}
+
 impl Color {
     /// Fully transparent black, the default canvas clear color.
     pub const TRANSPARENT: Self = Self::rgba(0, 0, 0, 0);
