@@ -3495,7 +3495,12 @@ impl PaintApp {
             Tool::Brush | Tool::SelectionBrush => step_size(&mut self.brush_size, delta, 500),
             Tool::Eraser => step_size(&mut self.eraser_size, delta, 500),
             Tool::Airbrush => step_size(&mut self.airbrush_size, delta, 500),
-            Tool::Line | Tool::Curve | Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle => {
+            Tool::Line
+            | Tool::Curve
+            | Tool::Polygon
+            | Tool::Rectangle
+            | Tool::Ellipse
+            | Tool::RoundedRectangle => {
                 step_size(&mut self.stroke_size, delta, 500);
             }
             _ => {}

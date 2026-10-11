@@ -83,6 +83,17 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
         }
         Tool::Airbrush => size_row(ui, "Size", &mut app.airbrush_size, 1..=500),
         Tool::Line | Tool::Curve => size_row(ui, "Width", &mut app.stroke_size, 1..=500),
+        Tool::Polygon => {
+            size_row(ui, "Width", &mut app.stroke_size, 1..=500);
+            ui.label("Style");
+            ui.radio_value(&mut app.fill_style, ShapeFill::Outline, "Outline");
+            ui.radio_value(
+                &mut app.fill_style,
+                ShapeFill::FilledWithOutline,
+                "Outline + Fill",
+            );
+            ui.radio_value(&mut app.fill_style, ShapeFill::FilledOnly, "Fill only");
+        }
         Tool::Rectangle | Tool::Ellipse | Tool::RoundedRectangle => {
             size_row(ui, "Width", &mut app.stroke_size, 1..=500);
             if app.tool == Tool::RoundedRectangle {
