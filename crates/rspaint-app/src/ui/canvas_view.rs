@@ -57,13 +57,27 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     } else {
         cursor_pos.and_then(|pos| hovered_resize_handle(canvas_rect, pos))
     };
+    // The selection's transform box (bounding box) and its hovered handle.
+    let selection_box = app.selection_bounds().map(|(x, y, w, h)| {
+        egui::Rect::from_min_size(
+            canvas_rect.min + egui::vec2(x as f32 * magnification, y as f32 * magnification),
+            egui::vec2(w as f32 * magnification, h as f32 * magnification),
+        )
+    });
+    let selection_handle = if occluded {
+        None
+    } else {
+        cursor_pos.and_then(|pos| selection_box.and_then(|rect| hovered_box_handle(rect, pos)))
+    };
     let over_canvas = !occluded && cursor_pos.is_some_and(|pos| visible_canvas.contains(pos));
     if let Some(handle) = hovered_handle {
+        ui.ctx().set_cursor_icon(handle_cursor(handle));
+    } else if let Some(handle) = selection_handle {
         ui.ctx().set_cursor_icon(handle_cursor(handle));
     } else if over_canvas {
         ui.ctx().set_cursor_icon(egui::CursorIcon::None);
     }
-    let custom_cursor = over_canvas && hovered_handle.is_none();
+    let custom_cursor = over_canvas && hovered_handle.is_none() && selection_handle.is_none();
 
     let to_canvas = |pos: Pos2| -> (i32, i32) {
         (
@@ -91,7 +105,9 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         viewport_rect,
         magnification,
     );
-    if resizing {
+    let resizing_selection =
+        !resizing && handle_selection_resize(app, ui, &response, canvas_rect, magnification);
+    if resizing || resizing_selection {
         // The resize owns the input this frame.
     } else if let Some(target) = app.pick_hold() {
         handle_pick(app, &response, canvas_rect, &to_canvas, target);
@@ -123,6 +139,9 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     }
 
     paint_selection_overlay(app, ui, canvas_rect, magnification);
+    if let Some(rect) = selection_box {
+        paint_selection_box(app, ui, rect, selection_handle);
+    }
     paint_polygon_overlay(app, ui, canvas_rect, magnification);
     paint_text_overlay(app, ui, canvas_rect, magnification);
 
@@ -252,6 +271,107 @@ fn paint_resize_handles(
     }
 }
 
+/// The screen rectangle of a selection transform-box handle (centered on the box).
+fn box_handle_rect(box_rect: egui::Rect, handle: ResizeHandle) -> egui::Rect {
+    let s = HANDLE_SIZE;
+    let cx = box_rect.center().x;
+    let cy = box_rect.center().y;
+    let center = match handle {
+        ResizeHandle::North => egui::pos2(cx, box_rect.min.y),
+        ResizeHandle::South => egui::pos2(cx, box_rect.max.y),
+        ResizeHandle::East => egui::pos2(box_rect.max.x, cy),
+        ResizeHandle::West => egui::pos2(box_rect.min.x, cy),
+        ResizeHandle::NorthWest => egui::pos2(box_rect.min.x, box_rect.min.y),
+        ResizeHandle::NorthEast => egui::pos2(box_rect.max.x, box_rect.min.y),
+        ResizeHandle::SouthWest => egui::pos2(box_rect.min.x, box_rect.max.y),
+        ResizeHandle::SouthEast => egui::pos2(box_rect.max.x, box_rect.max.y),
+    };
+    egui::Rect::from_center_size(center, egui::vec2(s, s))
+}
+
+/// The selection transform-box handle under `pointer`, if any.
+fn hovered_box_handle(box_rect: egui::Rect, pointer: egui::Pos2) -> Option<ResizeHandle> {
+    ResizeHandle::ALL.into_iter().find(|&handle| {
+        box_handle_rect(box_rect, handle)
+            .expand(HANDLE_HIT)
+            .contains(pointer)
+    })
+}
+
+/// The selection box handle and its top-left under `pointer`, if any.
+fn selection_handle_at(
+    app: &PaintApp,
+    canvas_rect: egui::Rect,
+    pointer: egui::Pos2,
+) -> Option<(ResizeHandle, egui::Pos2)> {
+    let (x, y, w, h) = app.selection_bounds()?;
+    let mag = app.magnification;
+    let min = canvas_rect.min + egui::vec2(x as f32 * mag, y as f32 * mag);
+    let rect = egui::Rect::from_min_size(min, egui::vec2(w as f32 * mag, h as f32 * mag));
+    hovered_box_handle(rect, pointer).map(|handle| (handle, min))
+}
+
+/// Draws the selection transform box and its resize handles.
+fn paint_selection_box(
+    app: &PaintApp,
+    ui: &egui::Ui,
+    box_rect: egui::Rect,
+    hovered: Option<ResizeHandle>,
+) {
+    let painter = ui.painter();
+    if app.selection_is_simple_rect() {
+        // Plain rectangle: white handles with black borders.
+        for handle in ResizeHandle::ALL {
+            let rect = box_handle_rect(box_rect, handle);
+            let fill = if Some(handle) == hovered {
+                egui::Color32::from_gray(170)
+            } else {
+                egui::Color32::WHITE
+            };
+            painter.rect_filled(rect, 0.0, fill);
+            painter.rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.0, egui::Color32::BLACK),
+                egui::StrokeKind::Inside,
+            );
+        }
+    } else {
+        // Free-form / combined: dark-blue marching-ants box with cyan handles.
+        let dark_blue = egui::Color32::from_rgb(20, 40, 150);
+        painter.rect_stroke(
+            box_rect,
+            0.0,
+            egui::Stroke::new(1.0, dark_blue),
+            egui::StrokeKind::Outside,
+        );
+        let poly = [
+            box_rect.min,
+            egui::pos2(box_rect.max.x, box_rect.min.y),
+            box_rect.max,
+            egui::pos2(box_rect.min.x, box_rect.max.y),
+        ];
+        let phase = (ui.input(|i| i.time) as f32 * 24.0) % (ANTS_DASH * 2.0);
+        paint_ants(painter, &poly, phase);
+        for handle in ResizeHandle::ALL {
+            let rect = box_handle_rect(box_rect, handle);
+            let fill = if Some(handle) == hovered {
+                egui::Color32::from_rgb(0, 130, 130)
+            } else {
+                egui::Color32::from_rgb(0, 210, 210)
+            };
+            painter.rect_filled(rect, 0.0, fill);
+            painter.rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.0, egui::Color32::BLACK),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    ui.ctx().request_repaint();
+}
+
 /// Handles a canvas resize drag; returns whether it consumed the input.
 fn handle_canvas_resize(
     app: &mut PaintApp,
@@ -280,6 +400,38 @@ fn handle_canvas_resize(
                 app.update_canvas_resize(pos, viewport_rect.min);
             }
             return true;
+        }
+    }
+    false
+}
+
+/// Handles a selection-content resize drag; returns whether it consumed input.
+fn handle_selection_resize(
+    app: &mut PaintApp,
+    ui: &egui::Ui,
+    response: &egui::Response,
+    canvas_rect: egui::Rect,
+    magnification: f32,
+) -> bool {
+    if app.resizing_selection() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            app.update_selection_resize(pos);
+        }
+        if response.drag_stopped() {
+            app.finish_selection_resize();
+        }
+        return true;
+    }
+    if response.drag_started() && ui.input(|i| i.pointer.primary_down()) {
+        let origin = ui
+            .input(|i| i.pointer.press_origin())
+            .or(response.interact_pointer_pos());
+        if let Some(pos) = origin {
+            if let Some((handle, start_min)) = selection_handle_at(app, canvas_rect, pos) {
+                app.begin_selection_resize(handle, start_min, magnification);
+                app.update_selection_resize(pos);
+                return true;
+            }
         }
     }
     false
@@ -546,13 +698,25 @@ fn handle_selection(
     let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
     let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
 
-    if response.drag_started() && ui.input(|i| i.pointer.primary_down()) {
-        let origin = ui
-            .input(|i| i.pointer.press_origin())
-            .or(response.interact_pointer_pos());
-        if let Some(pos) = origin {
-            if on_canvas(pos) {
-                app.begin_selection_drag(to_canvas(pos), tool, shift, alt);
+    if response.drag_started() {
+        let (primary, secondary) =
+            ui.input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
+        // Contour Select uses right-click to drop a contour, not to subtract.
+        let right_subtract = secondary && tool != Tool::ContourSelect;
+        if primary || right_subtract {
+            let origin = ui
+                .input(|i| i.pointer.press_origin())
+                .or(response.interact_pointer_pos());
+            if let Some(pos) = origin {
+                if on_canvas(pos) {
+                    // Right-drag subtracts; Shift adds, Alt subtracts.
+                    app.begin_selection_drag(
+                        to_canvas(pos),
+                        tool,
+                        shift && !secondary,
+                        alt || right_subtract,
+                    );
+                }
             }
         }
     }
@@ -582,7 +746,15 @@ fn handle_selection(
         }
     }
     if response.secondary_clicked() {
-        app.deselect();
+        match response.interact_pointer_pos() {
+            // Contour Select drops the connected contour under the cursor.
+            Some(pos) if on_canvas(pos) && tool == Tool::ContourSelect => {
+                app.contour_deselect_at(to_canvas(pos));
+            }
+            // Otherwise right-click removes a pixel (anti-selection).
+            Some(pos) if on_canvas(pos) => app.select_pixel(to_canvas(pos), false, true),
+            _ => app.deselect(),
+        }
     }
 }
 
@@ -628,7 +800,11 @@ fn handle_magic_wand(
         }
     }
     if response.secondary_clicked() {
-        app.deselect();
+        // Right-click subtracts (anti-selection) from the magic-wand selection.
+        match response.interact_pointer_pos() {
+            Some(pos) if on_canvas(pos) => app.magic_wand_select(to_canvas(pos), false, true),
+            _ => app.deselect(),
+        }
     }
 }
 

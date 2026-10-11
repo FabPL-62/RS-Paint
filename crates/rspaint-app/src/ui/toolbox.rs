@@ -3,7 +3,7 @@
 use eframe::egui;
 use rspaint_core::{BrushShape, Color};
 
-use crate::app::{to_color32, BorderPlacement, ColorTarget, PaintApp, ShapeFill};
+use crate::app::{to_color32, BorderPlacement, ColorTarget, FlipRotate, PaintApp, ShapeFill};
 use crate::text::FontFamily;
 use crate::tools::Tool;
 
@@ -151,8 +151,11 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
             ui.checkbox(&mut app.text_transparent, "Transparent");
             ui.label("Drag on the canvas to place text");
         }
-        Tool::Select | Tool::FreeFormSelect | Tool::MagicWand => {
+        Tool::Select | Tool::FreeFormSelect | Tool::MagicWand | Tool::ContourSelect => {
             ui.checkbox(&mut app.selection_transparent, "Transparent");
+            if app.tool == Tool::ContourSelect {
+                ui.label("Uses the secondary color as background");
+            }
             if app.tool == Tool::MagicWand {
                 ui.horizontal(|ui| {
                     ui.label("Tolerance");
@@ -164,6 +167,35 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
                     }
                 });
             }
+            ui.separator();
+            ui.label("Transform selection");
+            // These only apply when there is a selection.
+            let enabled = app.selection.is_some();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Flip H"))
+                    .clicked()
+                {
+                    app.transform_selection_direct(FlipRotate::FlipHorizontal);
+                }
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Flip V"))
+                    .clicked()
+                {
+                    app.transform_selection_direct(FlipRotate::FlipVertical);
+                }
+            });
+            ui.horizontal(|ui| {
+                for (label, choice) in [
+                    ("90°", FlipRotate::Rotate90),
+                    ("180°", FlipRotate::Rotate180),
+                    ("270°", FlipRotate::Rotate270),
+                ] {
+                    if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                        app.transform_selection_direct(choice);
+                    }
+                }
+            });
         }
         _ => {
             ui.label("-");

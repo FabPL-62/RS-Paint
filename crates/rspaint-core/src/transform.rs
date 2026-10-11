@@ -177,6 +177,27 @@ pub fn invert(buffer: &PixelBuffer) -> PixelBuffer {
     out
 }
 
+/// Rescales the image to `new_width` x `new_height` with nearest-neighbor.
+pub fn scale(buffer: &PixelBuffer, new_width: u32, new_height: u32) -> PixelBuffer {
+    let new_width = new_width.max(1);
+    let new_height = new_height.max(1);
+    let (width, height) = (buffer.width(), buffer.height());
+    let mut out = PixelBuffer::transparent(new_width, new_height);
+    if width == 0 || height == 0 {
+        return out;
+    }
+    for y in 0..new_height {
+        for x in 0..new_width {
+            let sx = ((x as u64 * width as u64) / new_width as u64) as u32;
+            let sy = ((y as u64 * height as u64) / new_height as u64) as u32;
+            if let Some(color) = buffer.get(sx.min(width - 1), sy.min(height - 1)) {
+                out.set(x, y, color);
+            }
+        }
+    }
+    out
+}
+
 /// Crops the image to the given rectangle, clamped to the image bounds.
 pub fn crop(buffer: &PixelBuffer, x: i32, y: i32, width: u32, height: u32) -> PixelBuffer {
     let image_w = buffer.width() as i32;
@@ -216,6 +237,19 @@ mod tests {
         let flipped = flip_horizontal(&buffer);
         assert_eq!(flipped.get(2, 0), Some(Color::BLACK));
         assert_eq!(flipped.get(0, 0), Some(Color::WHITE));
+    }
+
+    #[test]
+    fn scale_keeps_corners_and_resizes() {
+        let mut buffer = PixelBuffer::new(2, 2, Color::WHITE);
+        buffer.set(0, 0, Color::BLACK);
+        buffer.set(1, 1, Color::rgb(0, 0, 255));
+        let upscaled = scale(&buffer, 4, 4);
+        assert_eq!(upscaled.size(), [4, 4]);
+        assert_eq!(upscaled.get(0, 0), Some(Color::BLACK));
+        assert_eq!(upscaled.get(3, 3), Some(Color::rgb(0, 0, 255)));
+        let downscaled = scale(&buffer, 1, 1);
+        assert_eq!(downscaled.size(), [1, 1]);
     }
 
     #[test]

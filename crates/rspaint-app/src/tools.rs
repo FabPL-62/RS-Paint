@@ -7,6 +7,7 @@ pub enum Tool {
     Select,
     MagicWand,
     SelectionBrush,
+    ContourSelect,
     Eraser,
     Fill,
     PickColor,
@@ -26,11 +27,12 @@ pub enum Tool {
 
 impl Tool {
     /// All tools, in tool box order.
-    pub const ALL: [Tool; 19] = [
+    pub const ALL: [Tool; 20] = [
         Tool::FreeFormSelect,
         Tool::Select,
         Tool::MagicWand,
         Tool::SelectionBrush,
+        Tool::ContourSelect,
         Tool::Eraser,
         Tool::Fill,
         Tool::PickColor,
@@ -55,6 +57,7 @@ impl Tool {
             Tool::Select => "Select",
             Tool::MagicWand => "Magic Wand",
             Tool::SelectionBrush => "Selection Brush",
+            Tool::ContourSelect => "Contour Select",
             Tool::Eraser => "Eraser",
             Tool::Fill => "Fill With Color",
             Tool::PickColor => "Pick Color",
@@ -144,6 +147,7 @@ impl Tool {
                 | Tool::FreeFormSelect
                 | Tool::MagicWand
                 | Tool::SelectionBrush
+                | Tool::ContourSelect
                 | Tool::Outliner
         )
     }

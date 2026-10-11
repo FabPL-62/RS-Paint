@@ -182,6 +182,25 @@ struct ResizeDrag {
     /// The canvas rectangle's top-left at the start of the drag (screen space).
     start_min: egui::Pos2,
     magnification: f32,
+    /// The selection origin at the start of the drag, so it can follow the
+    /// content when the canvas grows from the top/left.
+    sel_orig: Option<(i32, i32)>,
+}
+
+/// An in-progress resize of the selection content via its handles.
+struct SelectionResizeDrag {
+    handle: ResizeHandle,
+    orig_pixels: PixelBuffer,
+    orig_mask: Vec<bool>,
+    orig_x: i32,
+    orig_y: i32,
+    orig_w: u32,
+    orig_h: u32,
+    /// Canvas with the selection region cleared.
+    base: PixelBuffer,
+    /// Selection box top-left at the start of the drag (screen space).
+    start_min: egui::Pos2,
+    magnification: f32,
 }
 
 /// Content copied to the internal clipboard for pasting.
@@ -360,6 +379,8 @@ pub struct PaintApp {
     clipboard: Option<ClipboardContent>,
     /// The in-progress canvas resize, if any.
     resize_drag: Option<ResizeDrag>,
+    /// The in-progress selection-content resize, if any.
+    selection_resize: Option<SelectionResizeDrag>,
     /// The size of the canvas viewport, updated each frame (for initial zoom).
     viewport_size: egui::Vec2,
     /// Whether to adjust the zoom on the first frame with a known viewport.
@@ -533,6 +554,7 @@ impl PaintApp {
             selection_undo: Vec::new(),
             clipboard: None,
             resize_drag: None,
+            selection_resize: None,
             viewport_size: egui::Vec2::ZERO,
             pending_adjust_zoom: true,
             polygon_points: Vec::new(),
@@ -1429,6 +1451,72 @@ impl PaintApp {
         self.combine_new_region(region, add, subtract);
     }
 
+    /// Removes the connected selected region (contour) under `p` (Contour Select).
+    pub fn contour_deselect_at(&mut self, p: (i32, i32)) {
+        let Some(selection) = self.selection.as_ref() else {
+            return;
+        };
+        let (width, height) = (selection.pixels.width(), selection.pixels.height());
+        let local_x = p.0 - selection.x;
+        let local_y = p.1 - selection.y;
+        if local_x < 0 || local_y < 0 || local_x as u32 >= width || local_y as u32 >= height {
+            return;
+        }
+        let index = (local_y as u32 * width + local_x as u32) as usize;
+        if !selection.mask_bits.get(index).copied().unwrap_or(false) {
+            return;
+        }
+        self.selection_undo
+            .push((self.selection.clone(), self.document.buffer.clone()));
+
+        // Flood-fill the connected component (4-connected) and remove it.
+        let mut mask_bits = self
+            .selection
+            .as_ref()
+            .map(|selection| selection.mask_bits.clone())
+            .unwrap_or_default();
+        let mut stack = vec![(local_x, local_y)];
+        let mut removed = Vec::new();
+        while let Some((x, y)) = stack.pop() {
+            if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
+                continue;
+            }
+            let index = (y as u32 * width + x as u32) as usize;
+            if !mask_bits[index] {
+                continue;
+            }
+            mask_bits[index] = false;
+            removed.push((x as u32, y as u32));
+            stack.push((x + 1, y));
+            stack.push((x - 1, y));
+            stack.push((x, y + 1));
+            stack.push((x, y - 1));
+        }
+
+        if mask_bits.iter().all(|&selected| !selected) {
+            self.selection = None;
+            self.mark_full();
+            return;
+        }
+
+        if let Some(selection) = self.selection.as_mut() {
+            for (x, y) in removed {
+                selection.pixels.set(x, y, Color::TRANSPARENT);
+            }
+            let is_rect = mask_bits.iter().all(|&selected| selected);
+            selection.boundary =
+                rspaint_core::selection::boundary_segments(&mask_bits, width, height);
+            selection.runs = runs_from_mask(&mask_bits, width, height);
+            selection.mask_bits = mask_bits;
+            selection.mask = !is_rect;
+            selection.outline = Vec::new();
+            selection.floating = false;
+            selection.base = None;
+            selection.moved = false;
+        }
+        self.mark_full();
+    }
+
     /// Begins a Selection Brush stroke.
     ///
     /// `add` (Shift) and `subtract` (right/Alt) keep the existing selection;
@@ -1788,15 +1876,42 @@ impl PaintApp {
                         width,
                         height,
                     );
-                    Some(NewRegion {
-                        pixels,
-                        x,
-                        y,
-                        mask_bits: vec![true; (width * height) as usize],
-                        outline: Vec::new(),
-                        mask: false,
-                        name: "Select",
-                    })
+                    if self.tool == Tool::ContourSelect {
+                        // Select the pixels that differ from the secondary color.
+                        let background = self.background;
+                        let mut mask_bits = vec![false; (width * height) as usize];
+                        let mut content = PixelBuffer::transparent(width, height);
+                        for ly in 0..height {
+                            for lx in 0..width {
+                                if let Some(color) = pixels.get(lx, ly) {
+                                    if color != background {
+                                        mask_bits[(ly * width + lx) as usize] = true;
+                                        content.set(lx, ly, color);
+                                    }
+                                }
+                            }
+                        }
+                        let is_mask = !mask_bits.iter().all(|&selected| selected);
+                        Some(NewRegion {
+                            pixels: content,
+                            x,
+                            y,
+                            mask_bits,
+                            outline: Vec::new(),
+                            mask: is_mask,
+                            name: "Contour Select",
+                        })
+                    } else {
+                        Some(NewRegion {
+                            pixels,
+                            x,
+                            y,
+                            mask_bits: vec![true; (width * height) as usize],
+                            outline: Vec::new(),
+                            mask: false,
+                            name: "Select",
+                        })
+                    }
                 }
             }
             CreatingSelection::Lasso { points } => {
@@ -1946,7 +2061,25 @@ impl PaintApp {
             orig_height: self.document.height(),
             start_min,
             magnification,
+            sel_orig: self.selection.as_ref().map(|s| (s.x, s.y)),
         });
+    }
+
+    /// Re-anchors the selection after the canvas changed size.
+    ///
+    /// The selection's `base`/floating state are reset because the resized
+    /// buffer already contains the (possibly shifted) content.
+    fn reanchor_selection_after_resize(&mut self, x: i32, y: i32) {
+        if let Some(selection) = self.selection.as_mut() {
+            selection.x = x;
+            selection.y = y;
+            selection.base = None;
+            selection.floating = false;
+            selection.moved = false;
+            selection.dragging = false;
+        }
+        self.selection_undo.clear();
+        self.selection_resize = None;
     }
 
     /// Updates the canvas size during a resize drag, anchored to the opposite edge.
@@ -1994,6 +2127,10 @@ impl PaintApp {
             .orig_buffer
             .resized_with_offset(new_width, new_height, offset_x, offset_y, fill);
         self.pan = egui::vec2(new_min_x - viewport_min.x, new_min_y - viewport_min.y);
+        // Keep the selection anchored to its content after the resize.
+        if let Some((origin_x, origin_y)) = drag.sel_orig {
+            self.reanchor_selection_after_resize(origin_x + offset_x, origin_y + offset_y);
+        }
         self.mark_full();
         self.resize_drag = Some(drag);
     }
@@ -2003,6 +2140,160 @@ impl PaintApp {
         if self.resize_drag.take().is_some() {
             self.commit("Resize Canvas");
         }
+    }
+
+    /// The selection's bounding box in image coordinates: `(x, y, width, height)`.
+    pub fn selection_bounds(&self) -> Option<(i32, i32, u32, u32)> {
+        let selection = self.selection.as_ref()?;
+        Some((
+            selection.x,
+            selection.y,
+            selection.pixels.width(),
+            selection.pixels.height(),
+        ))
+    }
+
+    /// Whether the selection is a plain rectangle (no free-form outline or mask).
+    pub fn selection_is_simple_rect(&self) -> bool {
+        self.selection.as_ref().is_some_and(|selection| {
+            selection.outline.is_empty() && selection.mask_bits.iter().all(|&selected| selected)
+        })
+    }
+
+    /// Whether a selection-content resize drag is in progress.
+    pub fn resizing_selection(&self) -> bool {
+        self.selection_resize.is_some()
+    }
+
+    /// Begins resizing the selection content from `handle`.
+    pub fn begin_selection_resize(
+        &mut self,
+        handle: ResizeHandle,
+        start_min: egui::Pos2,
+        magnification: f32,
+    ) {
+        let Some(selection) = self.selection.as_ref() else {
+            return;
+        };
+        let background = if self.selection_transparent {
+            Some(self.background)
+        } else {
+            None
+        };
+        let fill = self.selection_fill();
+        let base = match selection.base.as_ref() {
+            Some(base) => base.clone(),
+            None => {
+                let mut base = self.document.buffer.clone();
+                rspaint_core::selection::clear_masked(
+                    &mut base,
+                    &selection.pixels,
+                    selection.x,
+                    selection.y,
+                    background,
+                    fill,
+                );
+                base
+            }
+        };
+        // Ctrl+Z restores the selection and canvas before the resize.
+        self.selection_undo
+            .push((Some(selection.clone()), self.document.buffer.clone()));
+        let base_for_selection = base.clone();
+        self.selection_resize = Some(SelectionResizeDrag {
+            handle,
+            orig_pixels: selection.pixels.clone(),
+            orig_mask: selection.mask_bits.clone(),
+            orig_x: selection.x,
+            orig_y: selection.y,
+            orig_w: selection.pixels.width(),
+            orig_h: selection.pixels.height(),
+            base,
+            start_min,
+            magnification,
+        });
+        if let Some(selection) = self.selection.as_mut() {
+            selection.floating = true;
+            selection.base = Some(base_for_selection);
+            selection.moved = true;
+            selection.dragging = false;
+            selection.name = "Resize Selection";
+        }
+        self.mark_full();
+    }
+
+    /// Updates the selection-content resize during a drag.
+    pub fn update_selection_resize(&mut self, pointer: egui::Pos2) {
+        let Some(drag) = self.selection_resize.take() else {
+            return;
+        };
+        let mag = drag.magnification;
+        let left = drag.start_min.x;
+        let right = drag.start_min.x + drag.orig_w as f32 * mag;
+        let top = drag.start_min.y;
+        let bottom = drag.start_min.y + drag.orig_h as f32 * mag;
+
+        let mut new_width = drag.orig_w;
+        let mut new_height = drag.orig_h;
+        let mut new_min_x = left;
+        let mut new_min_y = top;
+        if drag.handle.touches_east() {
+            new_width = ((pointer.x - left) / mag).round().clamp(1.0, 100_000.0) as u32;
+        } else if drag.handle.touches_west() {
+            new_width = ((right - pointer.x) / mag).round().clamp(1.0, 100_000.0) as u32;
+            new_min_x = right - new_width as f32 * mag;
+        }
+        if drag.handle.touches_south() {
+            new_height = ((pointer.y - top) / mag).round().clamp(1.0, 100_000.0) as u32;
+        } else if drag.handle.touches_north() {
+            new_height = ((bottom - pointer.y) / mag).round().clamp(1.0, 100_000.0) as u32;
+            new_min_y = bottom - new_height as f32 * mag;
+        }
+
+        let new_x = drag.orig_x + ((new_min_x - left) / mag).round() as i32;
+        let new_y = drag.orig_y + ((new_min_y - top) / mag).round() as i32;
+
+        let new_pixels = transform::scale(&drag.orig_pixels, new_width, new_height);
+        let mask_source = mask_to_buffer(&drag.orig_mask, drag.orig_w, drag.orig_h);
+        let new_mask = buffer_to_mask(&transform::scale(&mask_source, new_width, new_height));
+        let is_rect = new_mask.iter().all(|&selected| selected);
+        let boundary = if is_rect {
+            Vec::new()
+        } else {
+            rspaint_core::selection::boundary_segments(&new_mask, new_width, new_height)
+        };
+        let runs = runs_from_mask(&new_mask, new_width, new_height);
+
+        let background = if self.selection_transparent {
+            Some(self.background)
+        } else {
+            None
+        };
+        let mut buffer = drag.base.clone();
+        rspaint_core::selection::stamp(&mut buffer, &new_pixels, new_x, new_y, background);
+        self.document.buffer = buffer;
+        if let Some(selection) = self.selection.as_mut() {
+            selection.pixels = new_pixels;
+            selection.mask_bits = new_mask;
+            selection.boundary = boundary;
+            selection.runs = runs;
+            selection.outline = Vec::new();
+            selection.mask = !is_rect;
+            selection.x = new_x;
+            selection.y = new_y;
+            selection.floating = true;
+            selection.moved = true;
+            selection.dragging = false;
+            selection.base = Some(drag.base.clone());
+            selection.name = "Resize Selection";
+        }
+        self.mark_full();
+        self.selection_resize = Some(drag);
+    }
+
+    /// Finishes a selection-content resize (stays a floating selection).
+    pub fn finish_selection_resize(&mut self) {
+        self.selection_resize = None;
     }
 
     /// Deletes the selected pixels (filling with background or transparency).
@@ -2178,6 +2469,9 @@ impl PaintApp {
         if width != self.document.width() || height != self.document.height() {
             self.document.buffer = self.document.buffer.resized(width, height, fill);
         }
+        if let Some((x, y)) = self.selection.as_ref().map(|s| (s.x, s.y)) {
+            self.reanchor_selection_after_resize(x, y);
+        }
         self.document.transparent = self.attributes_transparent;
         self.commit("Resize Canvas");
         self.mark_full();
@@ -2193,15 +2487,6 @@ impl PaintApp {
     pub fn apply_flip_rotate(&mut self) {
         let choice = self.flip_rotate;
         let angle = self.flip_rotate_angle;
-        let buffer = &self.document.buffer;
-        let result = match choice {
-            FlipRotate::FlipHorizontal => transform::flip_horizontal(buffer),
-            FlipRotate::FlipVertical => transform::flip_vertical(buffer),
-            FlipRotate::Rotate90 => transform::rotate_90(buffer),
-            FlipRotate::Rotate180 => transform::rotate_180(buffer),
-            FlipRotate::Rotate270 => transform::rotate_270(buffer),
-            FlipRotate::Arbitrary => transform::rotate(buffer, angle),
-        };
         let name = match choice {
             FlipRotate::FlipHorizontal => "Flip Horizontal",
             FlipRotate::FlipVertical => "Flip Vertical",
@@ -2210,11 +2495,48 @@ impl PaintApp {
             FlipRotate::Rotate270 => "Rotate 270°",
             FlipRotate::Arbitrary => "Rotate",
         };
-        self.document.buffer = result;
-        self.pan = egui::Vec2::ZERO;
-        self.mark_full();
-        self.commit(name);
+        let apply = |buffer: &PixelBuffer| match choice {
+            FlipRotate::FlipHorizontal => transform::flip_horizontal(buffer),
+            FlipRotate::FlipVertical => transform::flip_vertical(buffer),
+            FlipRotate::Rotate90 => transform::rotate_90(buffer),
+            FlipRotate::Rotate180 => transform::rotate_180(buffer),
+            FlipRotate::Rotate270 => transform::rotate_270(buffer),
+            FlipRotate::Arbitrary => transform::rotate(buffer, angle),
+        };
+        if self.selection.is_some() {
+            self.transform_selection(apply, name);
+        } else {
+            self.document.buffer = apply(&self.document.buffer);
+            self.pan = egui::Vec2::ZERO;
+            self.mark_full();
+            self.commit(name);
+        }
         self.show_flip_rotate = false;
+    }
+
+    /// Applies a flip/rotate directly to the active selection (no-op if none).
+    pub fn transform_selection_direct(&mut self, choice: FlipRotate) {
+        if self.selection.is_none() {
+            return;
+        }
+        let angle = self.flip_rotate_angle;
+        let name = match choice {
+            FlipRotate::FlipHorizontal => "Flip Horizontal",
+            FlipRotate::FlipVertical => "Flip Vertical",
+            FlipRotate::Rotate90 => "Rotate 90°",
+            FlipRotate::Rotate180 => "Rotate 180°",
+            FlipRotate::Rotate270 => "Rotate 270°",
+            FlipRotate::Arbitrary => "Rotate",
+        };
+        let apply = |buffer: &PixelBuffer| match choice {
+            FlipRotate::FlipHorizontal => transform::flip_horizontal(buffer),
+            FlipRotate::FlipVertical => transform::flip_vertical(buffer),
+            FlipRotate::Rotate90 => transform::rotate_90(buffer),
+            FlipRotate::Rotate180 => transform::rotate_180(buffer),
+            FlipRotate::Rotate270 => transform::rotate_270(buffer),
+            FlipRotate::Arbitrary => transform::rotate(buffer, angle),
+        };
+        self.transform_selection(apply, name);
     }
 
     /// Replaces the foreground color with the background color.
@@ -2484,14 +2806,6 @@ impl PaintApp {
         } else {
             self.background
         };
-        let result = transform::stretch_and_skew(
-            &self.document.buffer,
-            x_scale,
-            y_scale,
-            h_skew,
-            v_skew,
-            fill,
-        );
         let stretched = self.stretch_x != 100.0 || self.stretch_y != 100.0;
         let skewed = self.skew_h != 0.0 || self.skew_v != 0.0;
         let name = match (stretched, skewed) {
@@ -2500,11 +2814,99 @@ impl PaintApp {
             (false, true) => "Skew",
             (false, false) => "Stretch and Skew",
         };
-        self.document.buffer = result;
-        self.pan = egui::Vec2::ZERO;
-        self.mark_full();
-        self.commit(name);
+        let apply = |buffer: &PixelBuffer| {
+            transform::stretch_and_skew(buffer, x_scale, y_scale, h_skew, v_skew, fill)
+        };
+        if self.selection.is_some() {
+            self.transform_selection(apply, name);
+        } else {
+            self.document.buffer = apply(&self.document.buffer);
+            self.pan = egui::Vec2::ZERO;
+            self.mark_full();
+            self.commit(name);
+        }
         self.show_stretch_skew = false;
+    }
+
+    /// Applies a pixel transform to the active selection, keeping its position.
+    ///
+    /// The selection's mask is transformed alongside its pixels so combined
+    /// (multi-region) selections transform as a whole around their bounding box.
+    fn transform_selection<F>(&mut self, apply: F, name: &'static str)
+    where
+        F: Fn(&PixelBuffer) -> PixelBuffer,
+    {
+        let Some(selection) = self.selection.take() else {
+            return;
+        };
+        // Ctrl+Z restores the selection and canvas before the transform.
+        self.selection_undo
+            .push((Some(selection.clone()), self.document.buffer.clone()));
+        let background = if self.selection_transparent {
+            Some(self.background)
+        } else {
+            None
+        };
+        let fill = self.selection_fill();
+
+        // Canvas with the selection region cleared, so the transformed content
+        // can be stamped fresh (reusing the existing base when already floating).
+        let base = match selection.base.as_ref() {
+            Some(base) => base.clone(),
+            None => {
+                let mut base = self.document.buffer.clone();
+                rspaint_core::selection::clear_masked(
+                    &mut base,
+                    &selection.pixels,
+                    selection.x,
+                    selection.y,
+                    background,
+                    fill,
+                );
+                base
+            }
+        };
+
+        let new_pixels = apply(&selection.pixels);
+        let mask_source = mask_to_buffer(
+            &selection.mask_bits,
+            selection.pixels.width(),
+            selection.pixels.height(),
+        );
+        let new_mask_bits = buffer_to_mask(&apply(&mask_source));
+        let width = new_pixels.width();
+        let height = new_pixels.height();
+        let is_rect = new_mask_bits.iter().all(|&selected| selected);
+        let boundary = if is_rect {
+            Vec::new()
+        } else {
+            rspaint_core::selection::boundary_segments(&new_mask_bits, width, height)
+        };
+        let runs = runs_from_mask(&new_mask_bits, width, height);
+
+        let (x, y) = (selection.x, selection.y);
+        let mut buffer = base.clone();
+        rspaint_core::selection::stamp(&mut buffer, &new_pixels, x, y, background);
+        self.document.buffer = buffer;
+        self.selection = Some(Selection {
+            pixels: new_pixels,
+            x,
+            y,
+            outline: Vec::new(),
+            mask: !is_rect,
+            boundary,
+            mask_bits: new_mask_bits,
+            runs,
+            floating: true,
+            dragging: false,
+            moved: true,
+            drag_offset: (0, 0),
+            base: Some(base),
+            name,
+        });
+        // The transform stays a floating selection (like a move); it is
+        // committed to history when the selection is deselected.
+        self.mark_full();
     }
 
     /// Crops the canvas to the active selection's bounds.
@@ -3514,7 +3916,7 @@ pub enum BorderPlacement {
 
 /// The operation chosen in the Flip/Rotate dialog.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FlipRotate {
+pub enum FlipRotate {
     FlipHorizontal,
     FlipVertical,
     Rotate90,
@@ -3599,6 +4001,37 @@ fn selection_from_region(region: NewRegion) -> Selection {
         base: None,
         name: region.name,
     }
+}
+
+/// Renders a selection mask as an opaque-white buffer (for transforming it).
+fn mask_to_buffer(mask_bits: &[bool], width: u32, height: u32) -> PixelBuffer {
+    let mut buffer = PixelBuffer::transparent(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            if mask_bits
+                .get((y * width + x) as usize)
+                .copied()
+                .unwrap_or(false)
+            {
+                buffer.set(x, y, Color::WHITE);
+            }
+        }
+    }
+    buffer
+}
+
+/// Reads a selection mask back from a buffer's alpha channel.
+fn buffer_to_mask(buffer: &PixelBuffer) -> Vec<bool> {
+    let (width, height) = (buffer.width(), buffer.height());
+    let mut mask = vec![false; (width * height) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            if buffer.get(x, y).is_some_and(|color| color.a > 127) {
+                mask[(y * width + x) as usize] = true;
+            }
+        }
+    }
+    mask
 }
 
 /// Horizontal runs `(y, x_start, x_end)` of a mask (inclusive `x_end`).
