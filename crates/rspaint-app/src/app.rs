@@ -841,7 +841,10 @@ impl PaintApp {
         if self.tool == Tool::Magnifier && tool != Tool::Magnifier {
             self.zoom_rect = None;
         }
-        if !tool.is_selection() {
+        if tool.is_drawing() {
+            // Keep the selection so drawing stays clipped to it.
+            self.settle_selection();
+        } else if !tool.is_selection() {
             self.deselect();
         }
         // Diagonal brush shapes only apply to the Brush tool.
@@ -1006,6 +1009,15 @@ impl PaintApp {
                 draw_bezier(buffer, *start, *control_1, *control_2, *end, &brush, color)
             }
             _ => {}
+        }
+        if let Some(base) = self.curve_base.clone() {
+            let rect = RectI {
+                x0: 0,
+                y0: 0,
+                x1: width as i32 - 1,
+                y1: height as i32 - 1,
+            };
+            self.clip_region_to_selection(&base, rect);
         }
         self.mark_full();
     }
@@ -2077,6 +2089,93 @@ impl PaintApp {
         self.selection_pivot = None;
         self.selection_pivot_dragging = false;
         self.selection_rotate = None;
+    }
+
+    /// Commits any floating selection content but keeps the selection mask.
+    ///
+    /// Used when switching to a drawing tool so the drawing stays clipped to
+    /// the selection.
+    fn settle_selection(&mut self) {
+        let commit_name = self.selection.as_ref().and_then(|selection| {
+            (selection.floating && selection.moved).then_some(selection.name)
+        });
+        if let Some(name) = commit_name {
+            self.commit(name);
+        }
+        if let Some(selection) = self.selection.as_mut() {
+            selection.floating = false;
+            selection.base = None;
+            selection.moved = false;
+            selection.dragging = false;
+        }
+        self.selection_undo.clear();
+        self.selection_resize = None;
+        self.selection_rotate = None;
+        self.selection_pivot = None;
+        self.selection_pivot_dragging = false;
+    }
+
+    /// Whether the active tool's drawing is clipped to the selection.
+    pub fn clipping_to_selection(&self) -> bool {
+        self.selection.is_some() && self.tool.is_drawing()
+    }
+
+    /// A canvas-sized mask of the active selection (`true` = selected).
+    fn selection_canvas_mask(&self) -> Option<Vec<bool>> {
+        let selection = self.selection.as_ref()?;
+        let (width, height) = (self.document.width() as i32, self.document.height() as i32);
+        let mut mask = vec![false; (width * height) as usize];
+        let (w, h) = (selection.pixels.width(), selection.pixels.height());
+        for ly in 0..h {
+            for lx in 0..w {
+                if selection
+                    .mask_bits
+                    .get((ly * w + lx) as usize)
+                    .copied()
+                    .unwrap_or(true)
+                {
+                    let cx = selection.x + lx as i32;
+                    let cy = selection.y + ly as i32;
+                    if cx >= 0 && cy >= 0 && cx < width && cy < height {
+                        mask[(cy * width + cx) as usize] = true;
+                    }
+                }
+            }
+        }
+        Some(mask)
+    }
+
+    /// Restores the pixels outside the selection from `snapshot` within `rect`.
+    fn clip_region_to_selection(&mut self, snapshot: &PixelBuffer, rect: RectI) {
+        if !self.clipping_to_selection() {
+            return;
+        }
+        let Some(selection) = self.selection.as_ref() else {
+            return;
+        };
+        let (sw, sh) = (selection.pixels.width(), selection.pixels.height());
+        let (sx, sy) = (selection.x, selection.y);
+        let (width, height) = (self.document.width() as i32, self.document.height() as i32);
+        for y in rect.y0.max(0)..=rect.y1.min(height - 1) {
+            for x in rect.x0.max(0)..=rect.x1.min(width - 1) {
+                let lx = x - sx;
+                let ly = y - sy;
+                let selected = lx >= 0
+                    && ly >= 0
+                    && (lx as u32) < sw
+                    && (ly as u32) < sh
+                    && selection
+                        .mask_bits
+                        .get((ly as u32 * sw + lx as u32) as usize)
+                        .copied()
+                        .unwrap_or(true);
+                if !selected {
+                    if let Some(color) = snapshot.get(x as u32, y as u32) {
+                        self.document.buffer.set(x as u32, y as u32, color);
+                    }
+                }
+            }
+        }
     }
 
     /// Copies the active selection (Ctrl+C) to the internal and system clipboards.
@@ -3372,6 +3471,9 @@ impl PaintApp {
                 preview_rect: Some(preview_rect),
             });
             self.draw_shape(p, p, color, fill_color);
+            if let Some(base) = self.stroke.as_ref().and_then(|stroke| stroke.base.clone()) {
+                self.clip_region_to_selection(&base, preview_rect);
+            }
             self.mark_rect(preview_rect);
         } else if tool.is_freehand() {
             let color_eraser = tool == Tool::Eraser && button == PointerButton::Secondary;
@@ -3390,8 +3492,18 @@ impl PaintApp {
                 preview_rect: None,
             });
             // Fresh per-stroke mask so a single pass paints each pixel once.
+            // When clipping to a selection, mark unselected pixels as painted
+            // so the stroke never touches them.
             let count = (self.document.width() * self.document.height()) as usize;
-            self.stroke_painted = vec![false; count];
+            let clip_mask = if self.clipping_to_selection() {
+                self.selection_canvas_mask()
+            } else {
+                None
+            };
+            self.stroke_painted = match clip_mask {
+                Some(mask) => mask.into_iter().map(|selected| !selected).collect(),
+                None => vec![false; count],
+            };
             self.draw_freehand(p, p, color);
             self.mark_segment(p, p, self.tool_radius());
         }
@@ -3470,6 +3582,9 @@ impl PaintApp {
             }
         }
         self.draw_shape(start, end, color, fill);
+        if let Some(base) = self.stroke.as_ref().and_then(|stroke| stroke.base.clone()) {
+            self.clip_region_to_selection(&base, new_rect);
+        }
         if let Some(stroke) = self.stroke.as_mut() {
             stroke.preview_rect = Some(new_rect);
         }
@@ -3668,6 +3783,9 @@ impl PaintApp {
             Tool::Fill => {
                 let color = self.active_color(button);
                 self.note_used_color(color);
+                let base = self
+                    .clipping_to_selection()
+                    .then(|| self.document.buffer.clone());
                 flood_fill(
                     &mut self.document.buffer,
                     p.0,
@@ -3676,6 +3794,15 @@ impl PaintApp {
                     !shift,
                     self.paint_blend,
                 );
+                if let Some(base) = base {
+                    let rect = RectI {
+                        x0: 0,
+                        y0: 0,
+                        x1: self.document.width() as i32 - 1,
+                        y1: self.document.height() as i32 - 1,
+                    };
+                    self.clip_region_to_selection(&base, rect);
+                }
                 self.commit("Fill With Color");
                 self.mark_full();
             }

@@ -57,22 +57,32 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     } else {
         cursor_pos.and_then(|pos| hovered_resize_handle(canvas_rect, pos))
     };
-    // The selection's transform box (bounding box) and its hovered handle.
-    let selection_box = app.selection_bounds().map(|(x, y, w, h)| {
-        egui::Rect::from_min_size(
-            canvas_rect.min + egui::vec2(x as f32 * magnification, y as f32 * magnification),
-            egui::vec2(w as f32 * magnification, h as f32 * magnification),
-        )
-    });
-    let selection_handle = if occluded {
+    // While drawing is clipped to the selection, hide the transform box and
+    // rotation gizmo (only the marching ants remain).
+    let clipping = app.clipping_to_selection();
+    let selection_box = if clipping {
+        None
+    } else {
+        app.selection_bounds().map(|(x, y, w, h)| {
+            egui::Rect::from_min_size(
+                canvas_rect.min + egui::vec2(x as f32 * magnification, y as f32 * magnification),
+                egui::vec2(w as f32 * magnification, h as f32 * magnification),
+            )
+        })
+    };
+    let selection_handle = if clipping || occluded {
         None
     } else {
         cursor_pos.and_then(|pos| selection_box.and_then(|rect| hovered_box_handle(rect, pos)))
     };
     // The rotation pivot (cross) and its handle (line + circle).
-    let pivot_screen = app.selection_pivot().map(|pivot| {
-        canvas_rect.min + egui::vec2(pivot.0 * magnification, pivot.1 * magnification)
-    });
+    let pivot_screen = if clipping {
+        None
+    } else {
+        app.selection_pivot().map(|pivot| {
+            canvas_rect.min + egui::vec2(pivot.0 * magnification, pivot.1 * magnification)
+        })
+    };
     let rotation_handle = pivot_screen.map(|pivot| rotation_handle_pos(app, pivot));
     let pivot_hovered = cursor_pos
         .zip(pivot_screen)
@@ -160,7 +170,7 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         ));
     }
 
-    paint_selection_overlay(app, ui, canvas_rect, magnification);
+    paint_selection_overlay(app, ui, canvas_rect, magnification, !clipping);
     if let Some(rect) = selection_box {
         paint_selection_box(app, ui, rect, selection_handle);
     }
@@ -1060,30 +1070,34 @@ fn paint_selection_overlay(
     ui: &egui::Ui,
     canvas_rect: egui::Rect,
     magnification: f32,
+    show_highlight: bool,
 ) {
     let phase = (ui.input(|i| i.time) as f32 * 24.0) % (ANTS_DASH * 2.0);
     let painter = ui.painter();
     let mut drew = false;
 
-    // Translucent highlight over the selected area.
-    if let Some(runs) = app.selection_brush_runs() {
-        paint_selection_highlight(
-            painter,
-            ui.clip_rect(),
-            canvas_rect,
-            magnification,
-            runs,
-            (0, 0),
-        );
-    } else if let Some((runs, origin)) = app.selection_runs() {
-        paint_selection_highlight(
-            painter,
-            ui.clip_rect(),
-            canvas_rect,
-            magnification,
-            runs,
-            origin,
-        );
+    // Translucent highlight over the selected area (hidden while drawing is
+    // clipped to the selection, so the real colors show through).
+    if show_highlight {
+        if let Some(runs) = app.selection_brush_runs() {
+            paint_selection_highlight(
+                painter,
+                ui.clip_rect(),
+                canvas_rect,
+                magnification,
+                runs,
+                (0, 0),
+            );
+        } else if let Some((runs, origin)) = app.selection_runs() {
+            paint_selection_highlight(
+                painter,
+                ui.clip_rect(),
+                canvas_rect,
+                magnification,
+                runs,
+                origin,
+            );
+        }
     }
 
     if let Some(segments) = app.selection_brush_boundary() {

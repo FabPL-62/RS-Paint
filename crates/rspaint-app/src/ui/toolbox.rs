@@ -50,6 +50,16 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                 {
                     app.replace_primary_with_secondary();
                 }
+                if ui
+                    .add_enabled(
+                        app.selection.is_some(),
+                        egui::Button::new("Clear selection"),
+                    )
+                    .on_hover_text("Deselect the current selection")
+                    .clicked()
+                {
+                    app.deselect();
+                }
 
                 ui.add_space(6.0);
                 ui.separator();

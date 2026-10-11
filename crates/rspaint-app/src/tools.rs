@@ -121,6 +121,25 @@ impl Tool {
         matches!(self, Tool::Fill | Tool::PickColor | Tool::Magnifier)
     }
 
+    /// Drawing tools: when a selection exists, their output is clipped to it.
+    pub fn is_drawing(self) -> bool {
+        matches!(
+            self,
+            Tool::Pencil
+                | Tool::Brush
+                | Tool::Fill
+                | Tool::Airbrush
+                | Tool::Eraser
+                | Tool::Text
+                | Tool::Line
+                | Tool::Curve
+                | Tool::Rectangle
+                | Tool::Polygon
+                | Tool::Ellipse
+                | Tool::RoundedRectangle
+        )
+    }
+
     /// Drawing tools whose output respects the paint blend/replace mode.
     pub fn uses_blend_mode(self) -> bool {
         matches!(
