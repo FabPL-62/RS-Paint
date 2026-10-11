@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+// Hide the console window on Windows release builds (keep it in debug for logs).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
 mod canvas_renderer;
