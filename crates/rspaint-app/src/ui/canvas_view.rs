@@ -69,15 +69,32 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     } else {
         cursor_pos.and_then(|pos| selection_box.and_then(|rect| hovered_box_handle(rect, pos)))
     };
+    // The rotation pivot (cross) and its handle (line + circle).
+    let pivot_screen = app.selection_pivot().map(|pivot| {
+        canvas_rect.min + egui::vec2(pivot.0 * magnification, pivot.1 * magnification)
+    });
+    let rotation_handle = pivot_screen.map(|pivot| rotation_handle_pos(app, pivot));
+    let pivot_hovered = cursor_pos
+        .zip(pivot_screen)
+        .is_some_and(|(cursor, pivot)| (cursor - pivot).length() <= CROSS_HIT);
+    let circle_hovered = cursor_pos
+        .zip(rotation_handle)
+        .is_some_and(|(cursor, handle)| (cursor - handle).length() <= CIRCLE_HIT);
     let over_canvas = !occluded && cursor_pos.is_some_and(|pos| visible_canvas.contains(pos));
     if let Some(handle) = hovered_handle {
         ui.ctx().set_cursor_icon(handle_cursor(handle));
     } else if let Some(handle) = selection_handle {
         ui.ctx().set_cursor_icon(handle_cursor(handle));
+    } else if pivot_hovered || circle_hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     } else if over_canvas {
         ui.ctx().set_cursor_icon(egui::CursorIcon::None);
     }
-    let custom_cursor = over_canvas && hovered_handle.is_none() && selection_handle.is_none();
+    let custom_cursor = over_canvas
+        && hovered_handle.is_none()
+        && selection_handle.is_none()
+        && !pivot_hovered
+        && !circle_hovered;
 
     let to_canvas = |pos: Pos2| -> (i32, i32) {
         (
@@ -107,8 +124,11 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     );
     let resizing_selection =
         !resizing && handle_selection_resize(app, ui, &response, canvas_rect, magnification);
-    if resizing || resizing_selection {
-        // The resize owns the input this frame.
+    let rotating = !resizing
+        && !resizing_selection
+        && handle_selection_rotation(app, ui, &response, canvas_rect, magnification);
+    if resizing || resizing_selection || rotating {
+        // The transform gizmo owns the input this frame.
     } else if let Some(target) = app.pick_hold() {
         handle_pick(app, &response, canvas_rect, &to_canvas, target);
     } else if app.tool == Tool::MagicWand {
@@ -143,6 +163,9 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     paint_selection_overlay(app, ui, canvas_rect, magnification);
     if let Some(rect) = selection_box {
         paint_selection_box(app, ui, rect, selection_handle);
+    }
+    if let (Some(pivot), Some(handle)) = (pivot_screen, rotation_handle) {
+        paint_selection_rotation(app, ui, pivot, handle, pivot_hovered, circle_hovered);
     }
     paint_zoom_rect(app, ui, canvas_rect, magnification);
     paint_polygon_overlay(app, ui, canvas_rect, magnification);
@@ -373,6 +396,108 @@ fn paint_selection_box(
         }
     }
     ui.ctx().request_repaint();
+}
+
+/// The distance from the pivot to the rotation handle, in screen points.
+const HANDLE_DIST: f32 = 40.0;
+/// The rotation handle circle radius.
+const CIRCLE_RADIUS: f32 = 5.0;
+/// Hit radius for the pivot cross.
+const CROSS_HIT: f32 = 8.0;
+/// Hit radius for the rotation handle circle.
+const CIRCLE_HIT: f32 = 8.0;
+
+/// The screen position of the rotation handle for a pivot.
+fn rotation_handle_pos(app: &PaintApp, pivot: egui::Pos2) -> egui::Pos2 {
+    let angle = app.selection_rotate_angle();
+    let direction = egui::vec2(angle.sin(), -angle.cos()) * HANDLE_DIST;
+    pivot + direction
+}
+
+/// Handles dragging the rotation pivot and the rotation handle.
+fn handle_selection_rotation(
+    app: &mut PaintApp,
+    ui: &egui::Ui,
+    response: &egui::Response,
+    canvas_rect: egui::Rect,
+    magnification: f32,
+) -> bool {
+    let Some(pivot) = app.selection_pivot() else {
+        return false;
+    };
+    let pivot_screen =
+        canvas_rect.min + egui::vec2(pivot.0 * magnification, pivot.1 * magnification);
+    let handle_screen = rotation_handle_pos(app, pivot_screen);
+    let to_image = |pos: egui::Pos2| -> (f32, f32) {
+        (
+            (pos.x - canvas_rect.min.x) / magnification,
+            (pos.y - canvas_rect.min.y) / magnification,
+        )
+    };
+
+    let shift = ui.input(|i| i.modifiers.shift);
+    if app.rotating_selection() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            app.update_selection_rotate(to_image(pos), shift);
+        }
+        if response.drag_stopped() {
+            app.finish_selection_rotate();
+        }
+        return true;
+    }
+    if app.pivot_dragging() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            app.move_selection_pivot(to_image(pos));
+        }
+        if response.drag_stopped() {
+            app.set_pivot_dragging(false);
+        }
+        return true;
+    }
+    if response.drag_started() {
+        let origin = ui
+            .input(|i| i.pointer.press_origin())
+            .or(response.interact_pointer_pos());
+        if let Some(pos) = origin {
+            if (pos - handle_screen).length() <= CIRCLE_HIT {
+                app.begin_selection_rotate(to_image(pos));
+                app.update_selection_rotate(to_image(pos), shift);
+                return true;
+            }
+            if (pos - pivot_screen).length() <= CROSS_HIT {
+                app.begin_pivot_drag(to_image(pos));
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Draws the rotation pivot cross, the line and the handle circle.
+fn paint_selection_rotation(
+    app: &PaintApp,
+    ui: &egui::Ui,
+    pivot: egui::Pos2,
+    handle: egui::Pos2,
+    pivot_hovered: bool,
+    circle_hovered: bool,
+) {
+    let painter = ui.painter();
+    let black = egui::Stroke::new(1.0, egui::Color32::BLACK);
+    painter.line_segment([pivot, handle], black);
+    let fill = if circle_hovered {
+        egui::Color32::from_gray(150)
+    } else {
+        egui::Color32::WHITE
+    };
+    painter.circle_filled(handle, CIRCLE_RADIUS, fill);
+    painter.circle_stroke(handle, CIRCLE_RADIUS, black);
+    let opacity = if pivot_hovered || app.pivot_dragging() || app.rotating_selection() {
+        1.0
+    } else {
+        0.5
+    };
+    app.paint_pivot_cross(painter, pivot, opacity);
 }
 
 /// Handles a canvas resize drag; returns whether it consumed the input.

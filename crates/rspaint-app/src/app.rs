@@ -107,6 +107,9 @@ struct Stroke {
 /// A horizontal selection highlight run `(y, x_start, x_end)`, inclusive.
 pub type HighlightRun = (i32, i32, i32);
 
+/// A selection undo snapshot: the selection, the canvas and the rotation pivot.
+type SelectionUndo = (Option<Selection>, PixelBuffer, Option<(f32, f32)>);
+
 /// A floating selection: pixel content plus its position on the canvas.
 #[derive(Clone)]
 pub struct Selection {
@@ -130,6 +133,10 @@ pub struct Selection {
     drag_offset: (i32, i32),
     /// The canvas with the original region cleared, used while floating.
     base: Option<PixelBuffer>,
+    /// Unrotated content for repeated rotations: `(pixels, mask, x, y)`.
+    rotation_origin: Option<(PixelBuffer, Vec<bool>, i32, i32)>,
+    /// The rotation handle's angle from "up" (radians).
+    rotation: f32,
     name: &'static str,
 }
 
@@ -201,6 +208,14 @@ struct SelectionResizeDrag {
     /// Selection box top-left at the start of the drag (screen space).
     start_min: egui::Pos2,
     magnification: f32,
+}
+
+/// An in-progress rotation of the selection content around a pivot.
+struct SelectionRotateDrag {
+    /// The pointer angle from "up" when the drag started.
+    start_angle: f32,
+    /// The selection's rotation angle when the drag started.
+    base_angle: f32,
 }
 
 /// Content copied to the internal clipboard for pasting.
@@ -373,8 +388,8 @@ pub struct PaintApp {
     creating_selection_add: bool,
     /// Whether the in-progress selection should be subtracted from the existing one.
     creating_selection_subtract: bool,
-    /// Undo stack of selection states (selection + canvas) for selection ops.
-    selection_undo: Vec<(Option<Selection>, PixelBuffer)>,
+    /// Undo stack of selection states (selection + canvas + pivot) for ops.
+    selection_undo: Vec<SelectionUndo>,
     /// Content copied with Ctrl+C for pasting.
     clipboard: Option<ClipboardContent>,
     /// The in-progress canvas resize, if any.
@@ -383,6 +398,12 @@ pub struct PaintApp {
     selection_resize: Option<SelectionResizeDrag>,
     /// The in-progress magnifier zoom rectangle `(start, end)`, if any.
     zoom_rect: Option<((i32, i32), (i32, i32))>,
+    /// The rotation pivot in absolute image coordinates, if the user moved it.
+    selection_pivot: Option<(f32, f32)>,
+    /// Whether the rotation pivot is being dragged.
+    selection_pivot_dragging: bool,
+    /// The in-progress selection rotation, if any.
+    selection_rotate: Option<SelectionRotateDrag>,
     /// The size of the canvas viewport, updated each frame (for initial zoom).
     viewport_size: egui::Vec2,
     /// Whether to adjust the zoom on the first frame with a known viewport.
@@ -558,6 +579,9 @@ impl PaintApp {
             resize_drag: None,
             selection_resize: None,
             zoom_rect: None,
+            selection_pivot: None,
+            selection_pivot_dragging: false,
+            selection_rotate: None,
             viewport_size: egui::Vec2::ZERO,
             pending_adjust_zoom: true,
             polygon_points: Vec::new(),
@@ -742,12 +766,13 @@ impl PaintApp {
     /// Undoes the last action, if possible.
     pub fn undo(&mut self) {
         // Undo the most recent selection operation first.
-        if let Some((mut selection, buffer)) = self.selection_undo.pop() {
+        if let Some((mut selection, buffer, pivot)) = self.selection_undo.pop() {
             if let Some(selection) = selection.as_mut() {
                 selection.dragging = false;
             }
             self.document.buffer = buffer;
             self.selection = selection;
+            self.selection_pivot = pivot;
             self.creating_selection = None;
             self.creating_selection_add = false;
             self.creating_selection_subtract = false;
@@ -1392,8 +1417,11 @@ impl PaintApp {
             if !region_removes_any(previous, &region) {
                 return;
             }
-            self.selection_undo
-                .push((self.selection.clone(), self.document.buffer.clone()));
+            self.selection_undo.push((
+                self.selection.clone(),
+                self.document.buffer.clone(),
+                self.selection_pivot,
+            ));
             let previous = self.selection.take().expect("checked above");
             let was_floating = previous.floating;
             let base = previous.base.clone();
@@ -1440,8 +1468,11 @@ impl PaintApp {
                     return;
                 }
             }
-            self.selection_undo
-                .push((self.selection.clone(), self.document.buffer.clone()));
+            self.selection_undo.push((
+                self.selection.clone(),
+                self.document.buffer.clone(),
+                self.selection_pivot,
+            ));
             if let Some(previous) = self.selection.take() {
                 let fill = self.selection_fill();
                 let union = union_region(previous, region, fill);
@@ -1469,8 +1500,11 @@ impl PaintApp {
             self.selection = Some(selection_from_region(region));
         } else {
             self.deselect();
-            self.selection_undo
-                .push((self.selection.clone(), self.document.buffer.clone()));
+            self.selection_undo.push((
+                self.selection.clone(),
+                self.document.buffer.clone(),
+                self.selection_pivot,
+            ));
             self.selection = Some(selection_from_region(region));
         }
     }
@@ -1512,8 +1546,11 @@ impl PaintApp {
         if !selection.mask_bits.get(index).copied().unwrap_or(false) {
             return;
         }
-        self.selection_undo
-            .push((self.selection.clone(), self.document.buffer.clone()));
+        self.selection_undo.push((
+            self.selection.clone(),
+            self.document.buffer.clone(),
+            self.selection_pivot,
+        ));
 
         // Flood-fill the connected component (4-connected) and remove it.
         let mut mask_bits = self
@@ -1559,6 +1596,8 @@ impl PaintApp {
             selection.floating = false;
             selection.base = None;
             selection.moved = false;
+            selection.rotation_origin = None;
+            selection.rotation = 0.0;
         }
         self.mark_full();
     }
@@ -1568,8 +1607,11 @@ impl PaintApp {
     /// `add` (Shift) and `subtract` (right/Alt) keep the existing selection;
     /// otherwise the stroke replaces it.
     pub fn selection_brush_begin(&mut self, p: (i32, i32), subtract: bool, add: bool) {
-        self.selection_undo
-            .push((self.selection.clone(), self.document.buffer.clone()));
+        self.selection_undo.push((
+            self.selection.clone(),
+            self.document.buffer.clone(),
+            self.selection_pivot,
+        ));
 
         let (width, height) = (self.document.width(), self.document.height());
         let mut mask = vec![false; (width * height) as usize];
@@ -1668,6 +1710,8 @@ impl PaintApp {
             moved: false,
             drag_offset: (0, 0),
             base: None,
+            rotation_origin: None,
+            rotation: 0.0,
             name: "Selection Brush",
         });
     }
@@ -1738,16 +1782,14 @@ impl PaintApp {
         let Some(selection) = self.selection.as_ref() else {
             return false;
         };
-        let lx = p.0 - selection.x;
-        let ly = p.1 - selection.y;
-        if lx < 0 || ly < 0 {
+        let lx = (p.0 as i64) - (selection.x as i64);
+        let ly = (p.1 as i64) - (selection.y as i64);
+        let width = selection.pixels.width() as i64;
+        let height = selection.pixels.height() as i64;
+        if lx < 0 || ly < 0 || lx >= width || ly >= height {
             return false;
         }
-        let (lx, ly) = (lx as u32, ly as u32);
-        if lx >= selection.pixels.width() || ly >= selection.pixels.height() {
-            return false;
-        }
-        let index = (ly * selection.pixels.width() + lx) as usize;
+        let index = (ly * width + lx) as usize;
         selection.mask_bits.get(index).copied().unwrap_or(true)
     }
 
@@ -1797,8 +1839,11 @@ impl PaintApp {
                     selection.floating = false;
                     selection.base = None;
                 }
-                self.selection_undo
-                    .push((snapshot, self.document.buffer.clone()));
+                self.selection_undo.push((
+                    snapshot,
+                    self.document.buffer.clone(),
+                    self.selection_pivot,
+                ));
             }
             if let Some(selection) = self.selection.as_mut() {
                 selection.moved = true;
@@ -1868,6 +1913,22 @@ impl PaintApp {
         } else {
             None
         };
+        // Move the pivot and rotation origin with the selection.
+        let (dx, dy) = self
+            .selection
+            .as_ref()
+            .map(|selection| (new_x - selection.x, new_y - selection.y))
+            .unwrap_or((0, 0));
+        if let Some(pivot) = self.selection_pivot.as_mut() {
+            pivot.0 += dx as f32;
+            pivot.1 += dy as f32;
+        }
+        if let Some(selection) = self.selection.as_mut() {
+            if let Some((_, _, origin_x, origin_y)) = selection.rotation_origin.as_mut() {
+                *origin_x += dx;
+                *origin_y += dy;
+            }
+        }
         let mut dirty = None;
         if let Some(selection) = self.selection.as_mut() {
             let (old_x, old_y) = (selection.x, selection.y);
@@ -1994,6 +2055,9 @@ impl PaintApp {
         }
         // Selection is finalized; its undo stack no longer applies.
         self.selection_undo.clear();
+        self.selection_pivot = None;
+        self.selection_pivot_dragging = false;
+        self.selection_rotate = None;
     }
 
     /// Copies the active selection (Ctrl+C) to the internal and system clipboards.
@@ -2083,6 +2147,8 @@ impl PaintApp {
             moved: true,
             drag_offset: (0, 0),
             base: Some(base),
+            rotation_origin: None,
+            rotation: 0.0,
             name: "Paste",
         });
         self.mark_full();
@@ -2243,8 +2309,11 @@ impl PaintApp {
             }
         };
         // Ctrl+Z restores the selection and canvas before the resize.
-        self.selection_undo
-            .push((Some(selection.clone()), self.document.buffer.clone()));
+        self.selection_undo.push((
+            Some(selection.clone()),
+            self.document.buffer.clone(),
+            self.selection_pivot,
+        ));
         let base_for_selection = base.clone();
         self.selection_resize = Some(SelectionResizeDrag {
             handle,
@@ -2331,6 +2400,8 @@ impl PaintApp {
             selection.moved = true;
             selection.dragging = false;
             selection.base = Some(drag.base.clone());
+            selection.rotation_origin = None;
+            selection.rotation = 0.0;
             selection.name = "Resize Selection";
         }
         self.mark_full();
@@ -2342,13 +2413,232 @@ impl PaintApp {
         self.selection_resize = None;
     }
 
+    /// The rotation pivot in image coordinates (the box center unless moved).
+    pub fn selection_pivot(&self) -> Option<(f32, f32)> {
+        if let Some(pivot) = self.selection_pivot {
+            return Some(pivot);
+        }
+        let (x, y, w, h) = self.selection_bounds()?;
+        Some((x as f32 + w as f32 / 2.0, y as f32 + h as f32 / 2.0))
+    }
+
+    /// Moves the rotation pivot to `p` (absolute image coordinates).
+    pub fn move_selection_pivot(&mut self, p: (f32, f32)) {
+        self.selection_pivot = Some(p);
+    }
+
+    /// Begins dragging the rotation pivot (recorded as an undoable step).
+    pub fn begin_pivot_drag(&mut self, p: (f32, f32)) {
+        if self.selection.is_none() {
+            return;
+        }
+        self.selection_undo.push((
+            self.selection.clone(),
+            self.document.buffer.clone(),
+            self.selection_pivot,
+        ));
+        self.selection_pivot_dragging = true;
+        self.selection_pivot = Some(p);
+        // Moving the pivot resets the rotation handle to its default (up).
+        if let Some(selection) = self.selection.as_mut() {
+            selection.rotation = 0.0;
+            selection.rotation_origin = None;
+        }
+    }
+
+    /// Whether the rotation pivot is being dragged.
+    pub fn pivot_dragging(&self) -> bool {
+        self.selection_pivot_dragging
+    }
+
+    /// Sets whether the rotation pivot is being dragged.
+    pub fn set_pivot_dragging(&mut self, dragging: bool) {
+        self.selection_pivot_dragging = dragging;
+    }
+
+    /// The rotation handle's angle from "up" (radians).
+    pub fn selection_rotate_angle(&self) -> f32 {
+        self.selection
+            .as_ref()
+            .map(|selection| selection.rotation)
+            .unwrap_or(0.0)
+    }
+
+    /// Whether a selection rotation drag is in progress.
+    pub fn rotating_selection(&self) -> bool {
+        self.selection_rotate.is_some()
+    }
+
+    /// Begins rotating the selection around the pivot.
+    ///
+    /// The unrotated content is captured once, so repeated rotations always
+    /// start from the original shape (no cumulative degradation).
+    pub fn begin_selection_rotate(&mut self, pointer: (f32, f32)) {
+        if self.selection.is_none() {
+            return;
+        }
+        let Some(pivot) = self.selection_pivot() else {
+            return;
+        };
+        self.selection_undo.push((
+            self.selection.clone(),
+            self.document.buffer.clone(),
+            self.selection_pivot,
+        ));
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.rotation_origin.is_none())
+        {
+            let background = if self.selection_transparent {
+                Some(self.background)
+            } else {
+                None
+            };
+            let fill = self.selection_fill();
+            let (origin_pixels, origin_mask, origin_x, origin_y, base) = {
+                let selection = self.selection.as_ref().expect("checked above");
+                let base = match selection.base.as_ref() {
+                    Some(base) => base.clone(),
+                    None => {
+                        let mut base = self.document.buffer.clone();
+                        rspaint_core::selection::clear_masked(
+                            &mut base,
+                            &selection.pixels,
+                            selection.x,
+                            selection.y,
+                            background,
+                            fill,
+                        );
+                        base
+                    }
+                };
+                (
+                    selection.pixels.clone(),
+                    selection.mask_bits.clone(),
+                    selection.x,
+                    selection.y,
+                    base,
+                )
+            };
+            if let Some(selection) = self.selection.as_mut() {
+                selection.rotation_origin = Some((origin_pixels, origin_mask, origin_x, origin_y));
+                selection.base = Some(base);
+                selection.floating = true;
+                selection.moved = true;
+                selection.dragging = false;
+                selection.rotation = 0.0;
+                selection.name = "Rotate Selection";
+            }
+            // Freeze the pivot at the first rotation so it stays fixed.
+            self.selection_pivot = Some(pivot);
+        }
+        let start_angle = angle_from_up(pivot, pointer);
+        let base_angle = self
+            .selection
+            .as_ref()
+            .map(|selection| selection.rotation)
+            .unwrap_or(0.0);
+        self.selection_rotate = Some(SelectionRotateDrag {
+            start_angle,
+            base_angle,
+        });
+        self.mark_full();
+    }
+
+    /// Updates the selection rotation to `pointer` (image coordinates).
+    ///
+    /// When `snap` is set (Shift), the rotation snaps to 45° increments.
+    pub fn update_selection_rotate(&mut self, pointer: (f32, f32), snap: bool) {
+        let Some(drag) = self.selection_rotate.take() else {
+            return;
+        };
+        let Some(pivot) = self.selection_pivot() else {
+            self.selection_rotate = Some(drag);
+            return;
+        };
+        // Snap the total angle to 45° increments (like the Line tool).
+        let mut total = drag.base_angle + (angle_from_up(pivot, pointer) - drag.start_angle);
+        if snap {
+            let step = std::f32::consts::FRAC_PI_4;
+            total = (total / step).round() * step;
+        }
+
+        // Rotate from the original (unrotated) content.
+        let origin = self
+            .selection
+            .as_mut()
+            .and_then(|selection| selection.rotation_origin.take());
+        let Some((origin_pixels, origin_mask, origin_x, origin_y)) = origin else {
+            self.selection_rotate = Some(drag);
+            return;
+        };
+        let (new_pixels, new_mask, (new_x, new_y)) = rotate_content_around(
+            &origin_pixels,
+            &origin_mask,
+            (origin_x, origin_y),
+            pivot,
+            f64::from(total.to_degrees()),
+        );
+        let width = new_pixels.width();
+        let height = new_pixels.height();
+        let is_rect = new_mask.iter().all(|&selected| selected);
+        let boundary = if is_rect {
+            Vec::new()
+        } else {
+            rspaint_core::selection::boundary_segments(&new_mask, width, height)
+        };
+        let runs = runs_from_mask(&new_mask, width, height);
+        let background = if self.selection_transparent {
+            Some(self.background)
+        } else {
+            None
+        };
+        let base = self
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.base.clone());
+        let mut buffer = base.unwrap_or_else(|| self.document.buffer.clone());
+        rspaint_core::selection::stamp(&mut buffer, &new_pixels, new_x, new_y, background);
+        self.document.buffer = buffer;
+        if let Some(selection) = self.selection.as_mut() {
+            selection.rotation_origin = Some((origin_pixels, origin_mask, origin_x, origin_y));
+            selection.pixels = new_pixels;
+            selection.mask_bits = new_mask;
+            selection.boundary = boundary;
+            selection.runs = runs;
+            selection.outline = Vec::new();
+            selection.mask = !is_rect;
+            selection.x = new_x;
+            selection.y = new_y;
+            selection.floating = true;
+            selection.moved = true;
+            selection.dragging = false;
+            selection.rotation = total;
+            selection.name = "Rotate Selection";
+        }
+        self.mark_full();
+        self.selection_rotate = Some(drag);
+    }
+
+    /// Finishes a selection rotation.
+    ///
+    /// The handle keeps its angle so the rotation is visible; it only returns
+    /// to the default (up) position when the pivot is moved.
+    pub fn finish_selection_rotate(&mut self) {
+        self.selection_rotate = None;
+    }
+
     /// Deletes the selected pixels (filling with background or transparency).
     pub fn delete_selection(&mut self) {
         if self.selection.is_none() {
             return;
         }
-        self.selection_undo
-            .push((self.selection.clone(), self.document.buffer.clone()));
+        self.selection_undo.push((
+            self.selection.clone(),
+            self.document.buffer.clone(),
+            self.selection_pivot,
+        ));
         let Some(selection) = self.selection.take() else {
             return;
         };
@@ -2886,8 +3176,11 @@ impl PaintApp {
             return;
         };
         // Ctrl+Z restores the selection and canvas before the transform.
-        self.selection_undo
-            .push((Some(selection.clone()), self.document.buffer.clone()));
+        self.selection_undo.push((
+            Some(selection.clone()),
+            self.document.buffer.clone(),
+            self.selection_pivot,
+        ));
         let background = if self.selection_transparent {
             Some(self.background)
         } else {
@@ -2948,6 +3241,8 @@ impl PaintApp {
             moved: true,
             drag_offset: (0, 0),
             base: Some(base),
+            rotation_origin: None,
+            rotation: 0.0,
             name,
         });
         // The transform stays a floating selection (like a move); it is
@@ -3280,6 +3575,13 @@ impl PaintApp {
         self.cursors
             .for_state(self.tool, self.pick_hold)
             .paint(painter, pointer);
+    }
+
+    /// Draws the rotation pivot cross (precise-dotted) centered at `center`.
+    pub fn paint_pivot_cross(&self, painter: &egui::Painter, center: egui::Pos2, opacity: f32) {
+        // Nudge the image slightly right so its visual center sits on the pivot.
+        let center = center + egui::vec2(1.0, 0.0);
+        self.cursors.paint_precise_dotted(painter, center, opacity);
     }
 
     /// Picks the color under `p` into the given active color.
@@ -4050,6 +4352,8 @@ fn selection_from_region(region: NewRegion) -> Selection {
         moved: false,
         drag_offset: (0, 0),
         base: None,
+        rotation_origin: None,
+        rotation: 0.0,
         name: region.name,
     }
 }
@@ -4083,6 +4387,128 @@ fn buffer_to_mask(buffer: &PixelBuffer) -> Vec<bool> {
         }
     }
     mask
+}
+
+/// The angle (radians, clockwise from "up") from `pivot` to `point`.
+fn angle_from_up(pivot: (f32, f32), point: (f32, f32)) -> f32 {
+    let dx = point.0 - pivot.0;
+    let dy = point.1 - pivot.1;
+    dx.atan2(-dy)
+}
+
+/// Rotates a selection's content around `pivot`, returning the new buffer, mask
+/// and top-left origin (nearest neighbor).
+fn rotate_content_around(
+    pixels: &PixelBuffer,
+    mask: &[bool],
+    origin: (i32, i32),
+    pivot: (f32, f32),
+    degrees: f64,
+) -> (PixelBuffer, Vec<bool>, (i32, i32)) {
+    let (width, height) = (pixels.width() as f64, pixels.height() as f64);
+    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
+    let (px, py) = (f64::from(pivot.0), f64::from(pivot.1));
+    let radians = degrees.to_radians();
+    let (cos, sin) = (radians.cos(), radians.sin());
+
+    let corners = [
+        (ox, oy),
+        (ox + width, oy),
+        (ox + width, oy + height),
+        (ox, oy + height),
+    ];
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for (cx, cy) in corners {
+        let dx = cx - px;
+        let dy = cy - py;
+        let rx = px + dx * cos - dy * sin;
+        let ry = py + dx * sin + dy * cos;
+        min_x = min_x.min(rx);
+        min_y = min_y.min(ry);
+        max_x = max_x.max(rx);
+        max_y = max_y.max(ry);
+    }
+    // Bound the output to avoid runaway allocations if the pivot is far.
+    let max_extent = (width + height) * 2.0 + 256.0;
+    let new_x = min_x.floor() as i32;
+    let new_y = min_y.floor() as i32;
+    let new_width = (max_x.ceil() - new_x as f64).clamp(1.0, max_extent) as u32;
+    let new_height = (max_y.ceil() - new_y as f64).clamp(1.0, max_extent) as u32;
+    let stride = new_width as usize;
+    let mut out = PixelBuffer::transparent(new_width, new_height);
+    let mut out_mask = vec![false; stride * new_height as usize];
+    let source_w = pixels.width() as usize;
+    for out_y in 0..new_height {
+        for out_x in 0..new_width {
+            let canvas_x = new_x as f64 + out_x as f64 + 0.5;
+            let canvas_y = new_y as f64 + out_y as f64 + 0.5;
+            let dx = canvas_x - px;
+            let dy = canvas_y - py;
+            let sx = px + dx * cos + dy * sin;
+            let sy = py - dx * sin + dy * cos;
+            let local_x = (sx - ox).floor();
+            let local_y = (sy - oy).floor();
+            if local_x >= 0.0 && local_y >= 0.0 && local_x < width && local_y < height {
+                let (local_x, local_y) = (local_x as u32, local_y as u32);
+                if mask
+                    .get(local_y as usize * source_w + local_x as usize)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    if let Some(color) = pixels.get(local_x, local_y) {
+                        out.set(out_x, out_y, color);
+                        out_mask[out_y as usize * stride + out_x as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Crop to the tight bounding box of the rotated content so repeated
+    // rotations don't accumulate empty margins.
+    let mut crop_min_x = new_width;
+    let mut crop_min_y = new_height;
+    let mut crop_max_x = 0;
+    let mut crop_max_y = 0;
+    let mut any = false;
+    for y in 0..new_height {
+        for x in 0..new_width {
+            if out_mask[y as usize * stride + x as usize] {
+                any = true;
+                crop_min_x = crop_min_x.min(x);
+                crop_min_y = crop_min_y.min(y);
+                crop_max_x = crop_max_x.max(x);
+                crop_max_y = crop_max_y.max(y);
+            }
+        }
+    }
+    if !any {
+        return (PixelBuffer::transparent(1, 1), vec![false], (new_x, new_y));
+    }
+    let crop_w = crop_max_x - crop_min_x + 1;
+    let crop_h = crop_max_y - crop_min_y + 1;
+    let crop_stride = crop_w as usize;
+    let mut cropped = PixelBuffer::transparent(crop_w, crop_h);
+    let mut cropped_mask = vec![false; crop_stride * crop_h as usize];
+    for y in 0..crop_h {
+        for x in 0..crop_w {
+            let (sx, sy) = (crop_min_x + x, crop_min_y + y);
+            if out_mask[sy as usize * stride + sx as usize] {
+                cropped_mask[y as usize * crop_stride + x as usize] = true;
+                if let Some(color) = out.get(sx, sy) {
+                    cropped.set(x, y, color);
+                }
+            }
+        }
+    }
+    (
+        cropped,
+        cropped_mask,
+        (new_x + crop_min_x as i32, new_y + crop_min_y as i32),
+    )
 }
 
 /// Horizontal runs `(y, x_start, x_end)` of a mask (inclusive `x_end`).
@@ -4221,6 +4647,8 @@ fn subtract_region(previous: Selection, region: &NewRegion) -> Option<Selection>
         moved: previous.moved,
         drag_offset: (0, 0),
         base: previous.base,
+        rotation_origin: None,
+        rotation: 0.0,
         name: previous.name,
     })
 }
@@ -4334,6 +4762,8 @@ fn union_region(previous: Selection, region: NewRegion, fill: Color) -> Selectio
         moved: previous.moved,
         drag_offset: (0, 0),
         base,
+        rotation_origin: None,
+        rotation: 0.0,
         name: region.name,
     }
 }

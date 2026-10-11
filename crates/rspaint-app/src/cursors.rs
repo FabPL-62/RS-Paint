@@ -98,6 +98,19 @@ impl CursorSet {
         }
     }
 
+    /// Paints the precise-dotted image centered at `center` with `opacity`.
+    pub fn paint_precise_dotted(&self, painter: &egui::Painter, center: egui::Pos2, opacity: f32) {
+        let cursor = &self.precise_dotted;
+        let rect = egui::Rect::from_center_size(center, cursor.size);
+        let tint = egui::Color32::from_white_alpha((opacity.clamp(0.0, 1.0) * 255.0) as u8);
+        painter.image(
+            cursor.texture.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            tint,
+        );
+    }
+
     /// The cursor for the given tool, or the eyedropper while color-picking.
     pub fn for_state(&self, tool: Tool, picking: Option<PickTarget>) -> &Cursor {
         if picking.is_some() {

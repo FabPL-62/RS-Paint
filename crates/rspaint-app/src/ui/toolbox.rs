@@ -76,6 +76,7 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
             // Diagonal brush shapes don't make sense for painting a selection.
             shape_row(ui, &mut app.brush_shape, false);
             size_row(ui, "Size", &mut app.brush_size, 1..=500);
+            ui.checkbox(&mut app.selection_transparent, "Transparent");
         }
         Tool::Eraser => {
             shape_row(ui, &mut app.eraser_shape, false);
