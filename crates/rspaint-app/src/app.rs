@@ -381,6 +381,8 @@ pub struct PaintApp {
     resize_drag: Option<ResizeDrag>,
     /// The in-progress selection-content resize, if any.
     selection_resize: Option<SelectionResizeDrag>,
+    /// The in-progress magnifier zoom rectangle `(start, end)`, if any.
+    zoom_rect: Option<((i32, i32), (i32, i32))>,
     /// The size of the canvas viewport, updated each frame (for initial zoom).
     viewport_size: egui::Vec2,
     /// Whether to adjust the zoom on the first frame with a known viewport.
@@ -555,6 +557,7 @@ impl PaintApp {
             clipboard: None,
             resize_drag: None,
             selection_resize: None,
+            zoom_rect: None,
             viewport_size: egui::Vec2::ZERO,
             pending_adjust_zoom: true,
             polygon_points: Vec::new(),
@@ -696,6 +699,46 @@ impl PaintApp {
         self.magnification = (self.magnification / 2.0).max(MIN_MAGNIFICATION);
     }
 
+    /// Begins a magnifier zoom rectangle at `p`.
+    pub fn begin_zoom_rect(&mut self, p: (i32, i32)) {
+        self.zoom_rect = Some((p, p));
+    }
+
+    /// Updates the magnifier zoom rectangle.
+    pub fn update_zoom_rect(&mut self, p: (i32, i32)) {
+        if let Some((_, end)) = self.zoom_rect.as_mut() {
+            *end = p;
+        }
+    }
+
+    /// The in-progress magnifier zoom rectangle.
+    pub fn zoom_rect(&self) -> Option<((i32, i32), (i32, i32))> {
+        self.zoom_rect
+    }
+
+    /// Applies the magnifier zoom rectangle: zooms to it and centers it.
+    pub fn apply_zoom_rect(&mut self, viewport_size: egui::Vec2) {
+        let Some((a, b)) = self.zoom_rect.take() else {
+            return;
+        };
+        let width = (a.0 - b.0).abs() + 1;
+        let height = (a.1 - b.1).abs() + 1;
+        if width < 2 || height < 2 {
+            return;
+        }
+        let x = a.0.min(b.0);
+        let y = a.1.min(b.1);
+        let magnification = (viewport_size.x / width as f32)
+            .min(viewport_size.y / height as f32)
+            .clamp(MIN_MAGNIFICATION, MAX_MAGNIFICATION);
+        self.magnification = magnification;
+        let rect_center = egui::vec2(
+            x as f32 + width as f32 / 2.0,
+            y as f32 + height as f32 / 2.0,
+        );
+        self.pan = viewport_size / 2.0 - rect_center * magnification;
+    }
+
     /// Undoes the last action, if possible.
     pub fn undo(&mut self) {
         // Undo the most recent selection operation first.
@@ -759,6 +802,9 @@ impl PaintApp {
         }
         if self.tool == Tool::Text && tool != Tool::Text {
             self.commit_text();
+        }
+        if self.tool == Tool::Magnifier && tool != Tool::Magnifier {
+            self.zoom_rect = None;
         }
         if !tool.is_selection() {
             self.deselect();

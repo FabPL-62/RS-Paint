@@ -123,6 +123,8 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         handle_curve(app, ui, &response, canvas_rect, &to_canvas);
     } else if app.tool == Tool::Text {
         handle_text(app, ui, &response, canvas_rect, &to_canvas);
+    } else if app.tool == Tool::Magnifier {
+        handle_magnifier(app, ui, &response, canvas_rect, viewport_rect, &to_canvas);
     } else {
         handle_drawing(app, ui, &response, canvas_rect, &to_canvas);
     }
@@ -142,6 +144,7 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     if let Some(rect) = selection_box {
         paint_selection_box(app, ui, rect, selection_handle);
     }
+    paint_zoom_rect(app, ui, canvas_rect, magnification);
     paint_polygon_overlay(app, ui, canvas_rect, magnification);
     paint_text_overlay(app, ui, canvas_rect, magnification);
 
@@ -454,6 +457,60 @@ fn handle_pick(
             app.pick_color_at(to_canvas(pos), target);
         }
     }
+}
+
+/// Handles the Magnifier: drag a rectangle to zoom into it, click to zoom.
+fn handle_magnifier(
+    app: &mut PaintApp,
+    ui: &egui::Ui,
+    response: &egui::Response,
+    canvas_rect: egui::Rect,
+    viewport_rect: egui::Rect,
+    to_canvas: &impl Fn(Pos2) -> (i32, i32),
+) {
+    let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
+    if response.drag_started() && ui.input(|i| i.pointer.primary_down()) {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if on_canvas(pos) {
+                app.begin_zoom_rect(to_canvas(pos));
+            }
+        }
+    }
+    if response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            app.update_zoom_rect(to_canvas(pos));
+        }
+    }
+    if response.drag_stopped() {
+        app.apply_zoom_rect(viewport_rect.size());
+    }
+    if response.clicked() {
+        app.zoom_in();
+    }
+    if response.secondary_clicked() {
+        app.zoom_out();
+    }
+}
+
+/// Draws the in-progress magnifier zoom rectangle (marching ants).
+fn paint_zoom_rect(app: &PaintApp, ui: &egui::Ui, canvas_rect: egui::Rect, magnification: f32) {
+    let Some((a, b)) = app.zoom_rect() else {
+        return;
+    };
+    let min = canvas_rect.min
+        + egui::vec2(
+            a.0.min(b.0) as f32 * magnification,
+            a.1.min(b.1) as f32 * magnification,
+        );
+    let max = canvas_rect.min
+        + egui::vec2(
+            (a.0.max(b.0) + 1) as f32 * magnification,
+            (a.1.max(b.1) + 1) as f32 * magnification,
+        );
+    let poly = [min, egui::pos2(max.x, min.y), max, egui::pos2(min.x, max.y)];
+    let phase = (ui.input(|i| i.time) as f32 * 24.0) % (ANTS_DASH * 2.0);
+    paint_ants(ui.painter(), &poly, phase);
+    ui.ctx().request_repaint();
 }
 
 fn handle_polygon(
