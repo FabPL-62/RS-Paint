@@ -2771,6 +2771,20 @@ impl PaintApp {
 
     /// Deletes the selected pixels (filling with background or transparency).
     pub fn delete_selection(&mut self) {
+        self.delete_selection_named("Delete Selection");
+    }
+
+    /// Cuts the selection (Ctrl+X): copies it to the clipboard, then clears the
+    /// selected pixels and deselects, recorded as a single undoable step.
+    pub fn cut_selection(&mut self) {
+        if self.selection.is_none() {
+            return;
+        }
+        self.copy_selection();
+        self.delete_selection_named("Cut");
+    }
+
+    fn delete_selection_named(&mut self, name: &str) {
         if self.selection.is_none() {
             return;
         }
@@ -2804,7 +2818,7 @@ impl PaintApp {
                 selection.y + selection.pixels.height() as i32 - 1,
             ),
         ));
-        self.commit("Delete Selection");
+        self.commit(name);
     }
 
     /// Opens an image file chosen with a native dialog.
@@ -3987,6 +4001,14 @@ impl PaintApp {
                         if modifiers.command
                 )
             });
+            let cut_cmd = i.events.iter().any(|event| {
+                matches!(event, egui::Event::Cut)
+                    || matches!(
+                        event,
+                        egui::Event::Key { key: Key::X, pressed: false, modifiers, .. }
+                            if modifiers.command
+                    )
+            });
             if command && !self.ctrl_down {
                 self.ctrl_tap_used = false;
             }
@@ -4027,6 +4049,8 @@ impl PaintApp {
                 self.toggle_grid();
             } else if i.consume_key(Modifiers::CTRL, Key::F) {
                 self.show_bitmap = !self.show_bitmap;
+            } else if cut_cmd {
+                self.cut_selection();
             } else if copy_cmd {
                 self.copy_selection();
             } else if paste_cmd {
