@@ -241,8 +241,8 @@ sin pérdidas de calidad en un flujo completo.
 - [x] Draw Opaque, brush scaling con numpad (+/-); quick undo con segundo botón.
 
 ### Fase 3 - Texto y edición avanzada — EN CURSO
-- [x] Text tool con `ab_glyph`, toolbar (fuente Sans/Serif/Mono, tamaño, negrita/cursiva,
-  vertical, transparente); [ ] subrayado.
+- [x] Text tool con `ab_glyph`, toolbar (fuente Sans/Serif/Mono, tamaño, negrita/cursiva/
+  subrayado, vertical, transparente).
 - [x] Caja de texto en canvas, preview a cualquier zoom, commit undoable.
 - [x] Copy/Cut/Paste vía `arboard`; Paste From / Copy To.
 - [ ] Undo no lineal completo con regiones (diferencias).

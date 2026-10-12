@@ -37,6 +37,7 @@ pub struct TextStyle {
     pub size: f32,
     pub bold: bool,
     pub italic: bool,
+    pub underline: bool,
 }
 
 /// The loaded fonts, one per family.
@@ -162,8 +163,49 @@ pub fn draw_text(
             pen_x += scaled.h_advance(id);
             prev = Some(id);
         }
+        if style.underline {
+            draw_underline(
+                buffer,
+                x as f32,
+                pen_y,
+                measure(line),
+                style,
+                scaled.descent(),
+                color,
+            );
+        }
     }
     (lines.len() as f32 * line_height).ceil() as i32
+}
+
+/// Draws a horizontal underline beneath a line of text.
+fn draw_underline(
+    buffer: &mut PixelBuffer,
+    start_x: f32,
+    baseline: f32,
+    width: f32,
+    style: TextStyle,
+    descent: f32,
+    color: Color,
+) {
+    // Sit the line a little below the baseline, thicker for larger sizes.
+    let y = baseline - descent * 0.5;
+    let thickness = (style.size / 14.0).round().max(1.0) as i32;
+    let end = start_x + width;
+    let y0 = y.round() as i32;
+    for dy in 0..thickness {
+        let py = y0 + dy;
+        let shear = if style.italic {
+            ((y - baseline) * -0.25).round() as i32
+        } else {
+            0
+        };
+        let mut px = start_x.round() as i32;
+        while (px as f32) < end {
+            blend(buffer, px + shear, py, color, 1.0);
+            px += 1;
+        }
+    }
 }
 
 /// The caret line at the end of `text`, in text space: `(x, top, height)`.
@@ -277,6 +319,7 @@ mod tests {
             size: 24.0,
             bold: false,
             italic: false,
+            underline: false,
         };
         let mut buffer = PixelBuffer::transparent(80, 40);
         let used = draw_text(&fonts, &mut buffer, (2, 2), 76, "Hi", style, Color::BLACK);
@@ -286,6 +329,45 @@ mod tests {
             .filter(|&(x, y)| buffer.get(x, y).is_some_and(|c| c.a > 0))
             .count();
         assert!(painted > 10, "text painted {painted} pixels");
+    }
+
+    #[test]
+    fn underline_adds_pixels() {
+        let fonts = FontSet::load();
+        let make = |underline: bool| TextStyle {
+            family: FontFamily::Sans,
+            size: 24.0,
+            bold: false,
+            italic: false,
+            underline,
+        };
+        let count = |buffer: &PixelBuffer| {
+            (0..buffer.height())
+                .flat_map(|y| (0..buffer.width()).map(move |x| (x, y)))
+                .filter(|&(x, y)| buffer.get(x, y).is_some_and(|c| c.a > 0))
+                .count()
+        };
+        let mut plain = PixelBuffer::transparent(80, 40);
+        let mut underlined = PixelBuffer::transparent(80, 40);
+        draw_text(
+            &fonts,
+            &mut plain,
+            (2, 2),
+            76,
+            "Hi",
+            make(false),
+            Color::BLACK,
+        );
+        draw_text(
+            &fonts,
+            &mut underlined,
+            (2, 2),
+            76,
+            "Hi",
+            make(true),
+            Color::BLACK,
+        );
+        assert!(count(&underlined) > count(&plain));
     }
 
     #[test]

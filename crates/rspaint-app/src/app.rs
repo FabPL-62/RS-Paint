@@ -285,6 +285,7 @@ pub struct TextBox {
     pub size: f32,
     pub bold: bool,
     pub italic: bool,
+    pub underline: bool,
     pub vertical: bool,
     pub transparent: bool,
 }
@@ -469,6 +470,8 @@ pub struct PaintApp {
     pub text_bold: bool,
     /// Text tool option: italic.
     pub text_italic: bool,
+    /// Text tool option: underline.
+    pub text_underline: bool,
     /// Text tool option: vertical orientation.
     pub text_vertical: bool,
     /// Text tool option: transparent background.
@@ -637,6 +640,7 @@ impl PaintApp {
             text_size: 16.0,
             text_bold: false,
             text_italic: false,
+            text_underline: false,
             text_vertical: false,
             text_transparent: true,
             text_base: None,
@@ -1083,6 +1087,7 @@ impl PaintApp {
             size: text_box.size,
             bold: text_box.bold,
             italic: text_box.italic,
+            underline: text_box.underline,
         };
         if text_box.vertical {
             let (x, top, height) =
@@ -1146,6 +1151,7 @@ impl PaintApp {
             size: self.text_size,
             bold: self.text_bold,
             italic: self.text_italic,
+            underline: self.text_underline,
             vertical: self.text_vertical,
             transparent: self.text_transparent,
         });
@@ -1157,6 +1163,7 @@ impl PaintApp {
             size: self.text_size,
             bold: self.text_bold,
             italic: self.text_italic,
+            underline: self.text_underline,
         }
     }
 
@@ -1197,6 +1204,7 @@ impl PaintApp {
             size: text_box.size,
             bold: text_box.bold,
             italic: text_box.italic,
+            underline: text_box.underline,
         };
         let width = text_box.width.max(1) as u32;
         let height = text_box.height.max(1) as u32;

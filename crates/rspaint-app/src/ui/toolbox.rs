@@ -13,65 +13,72 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
         .resizable(false)
         .exact_width(150.0)
         .show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.vertical(|ui| {
-                for tool in Tool::ALL {
-                    let mut label = tool.name().to_string();
-                    if let Some(shortcut) = tool.shortcut() {
-                        label.push_str(&format!("  ({shortcut})"));
-                    }
-                    let selected = app.tool == tool;
-                    let response = ui
-                        .add_enabled_ui(tool.implemented(), |ui| {
-                            ui.selectable_label(selected, label)
-                        })
-                        .inner;
-                    if response.clicked() {
-                        app.set_tool(tool);
-                    }
-                }
+            // Keep the content inside the fixed panel width: without this, a
+            // wide options row grows the panel's measured rect and leaves an
+            // unpainted gap between the toolbox and the canvas.
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        for tool in Tool::ALL {
+                            let mut label = tool.name().to_string();
+                            if let Some(shortcut) = tool.shortcut() {
+                                label.push_str(&format!("  ({shortcut})"));
+                            }
+                            let selected = app.tool == tool;
+                            let response = ui
+                                .add_enabled_ui(tool.implemented(), |ui| {
+                                    ui.selectable_label(selected, label)
+                                })
+                                .inner;
+                            if response.clicked() {
+                                app.set_tool(tool);
+                            }
+                        }
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.label(egui::RichText::new("Options").strong());
-                tool_options(app, ui);
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.label(egui::RichText::new("Options").strong());
+                        tool_options(app, ui);
 
-                ui.add_space(6.0);
-                ui.separator();
-                let label = if app.selection.is_some() {
-                    "Replace Color (selection)"
-                } else {
-                    "Replace Color (all)"
-                };
-                if ui
-                    .button(label)
-                    .on_hover_text("Replace the foreground color with the background color")
-                    .clicked()
-                {
-                    app.replace_primary_with_secondary();
-                }
-                if ui
-                    .add_enabled(
-                        app.selection.is_some(),
-                        egui::Button::new("Clear selection"),
-                    )
-                    .on_hover_text("Deselect the current selection")
-                    .clicked()
-                {
-                    app.deselect();
-                }
+                        ui.add_space(6.0);
+                        ui.separator();
+                        let label = if app.selection.is_some() {
+                            "Replace Color (selection)"
+                        } else {
+                            "Replace Color (all)"
+                        };
+                        if ui
+                            .button(label)
+                            .on_hover_text("Replace the foreground color with the background color")
+                            .clicked()
+                        {
+                            app.replace_primary_with_secondary();
+                        }
+                        if ui
+                            .add_enabled(
+                                app.selection.is_some(),
+                                egui::Button::new("Clear selection"),
+                            )
+                            .on_hover_text("Deselect the current selection")
+                            .clicked()
+                        {
+                            app.deselect();
+                        }
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Grid");
-                    ui.add(
-                        egui::DragValue::new(&mut app.grid_opacity)
-                            .range(0..=100)
-                            .suffix("%"),
-                    );
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("Grid");
+                            ui.add(
+                                egui::DragValue::new(&mut app.grid_opacity)
+                                    .range(0..=100)
+                                    .suffix("%"),
+                            );
+                        });
+                    });
                 });
-            });
         });
 }
 
@@ -165,9 +172,10 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
                         .speed(0.5),
                 );
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut app.text_bold, "Bold");
                 ui.checkbox(&mut app.text_italic, "Italic");
+                ui.checkbox(&mut app.text_underline, "Underline");
             });
             ui.checkbox(&mut app.text_vertical, "Vertical");
             ui.checkbox(&mut app.text_transparent, "Transparent");
