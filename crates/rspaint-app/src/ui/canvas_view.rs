@@ -26,6 +26,11 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         ui.label("The GPU renderer is unavailable.");
         return;
     }
+    // The full-screen bitmap view replaces the canvas (drawn as an overlay).
+    if app.show_bitmap {
+        ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+        return;
+    }
 
     let viewport_size = ui.available_size();
     app.set_viewport_size(viewport_size);
@@ -1317,6 +1322,15 @@ fn handle_drawing(
 ) {
     let shift = ui.input(|i| i.modifiers.shift);
     let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
+
+    // Quick undo: pressing the other mouse button mid-stroke cancels it.
+    if app.has_stroke() {
+        let (primary, secondary) =
+            ui.input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
+        if primary && secondary {
+            app.cancel_stroke();
+        }
+    }
 
     if response.drag_started() {
         let (primary, secondary) =

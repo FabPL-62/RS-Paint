@@ -17,16 +17,16 @@ Este documento es el plan maestro. Cada fase produce software ejecutable y verif
 
 - **Fase 0:** completa.
 - **Fase 1 (MVP):** completa.
-- **Fase 2:** en curso — hechas Attributes/Clear, Flip/Rotate, Stretch/Skew, Invert,
-  Crop to Selection, Polygon; falta Curve, toggle de grilla, Zoom Custom/To Window,
-  View Bitmap, Thumbnail, quick undo.
+- **Fase 2:** completa — Attributes/Clear, Flip/Rotate, Stretch/Skew, Invert,
+  Crop to Selection, Polygon, Curve, grilla manual (Ctrl+G), Zoom Custom/To Window,
+  View Bitmap, Thumbnail y quick undo.
 - **Extras ya implementados (más allá del plan):** render del canvas con pase wgpu
   propio (checkerboard, grilla y cursor en el shader), pan con botón central,
   zoom Ctrl+rueda anclado al cursor, varita mágica, 3 estilos de relleno de formas,
   brochas diagonales, restricción Shift (cuadrado/círculo y líneas a 45°), radio de
   esquinas ajustable, transparencia de selección con Ctrl, Color Eraser.
 - **Verificación:** `cargo fmt`, `cargo clippy -D warnings` y `cargo test` en verde
-  (~78 tests) + smoke test de arranque. El *parity harness* (sección 8) aún no está
+  (87 tests) + smoke test de arranque. El *parity harness* (sección 8) aún no está
   implementado.
 
 ---
@@ -230,15 +230,15 @@ pub trait Tool {
 **Criterio de salida MVP:** dibujar, seleccionar, deshacer/rehacer, y guardar/abrir PNG
 sin pérdidas de calidad en un flujo completo.
 
-### Fase 2 - Paridad de edición de imagen — EN CURSO
+### Fase 2 - Paridad de edición de imagen — COMPLETA
 - [x] Image > Attributes (tamaño + transparente), Clear Image.
 - [x] Flip/Rotate (incl. ángulo arbitrario), Stretch/Skew, Invert Colors.
-- [x] "Crop to Selection"; [ ] aplicar transformaciones solo a la selección.
+- [x] "Crop to Selection"; aplicar transformaciones solo a la selección.
 - [x] Polygon (clic para vértices, cierre, relleno).
-- [ ] Curve (bezier con 2 puntos de control).
-- [ ] Grid manual (Ctrl+G); hoy la grilla aparece sola a partir de 8×.
-- [ ] Zoom Custom / Zoom To Window, View Bitmap, Thumbnail.
-- [x] Draw Opaque, brush scaling con numpad (+/-); [ ] quick undo con segundo botón.
+- [x] Curve (bezier con 2 puntos de control).
+- [x] Grid manual (Ctrl+G) + View > Show Grid (solo a partir de 4×).
+- [x] Zoom Custom / Zoom To Window, View Bitmap (Ctrl+F), Thumbnail.
+- [x] Draw Opaque, brush scaling con numpad (+/-); quick undo con segundo botón.
 
 ### Fase 3 - Texto y edición avanzada
 - [ ] Text tool con `cosmic-text`, text toolbar (fuente, tamaño, negrita/cursiva/subrayado).

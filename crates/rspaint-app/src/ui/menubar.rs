@@ -62,20 +62,57 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
             });
 
             ui.menu_button("View", |ui| {
-                if ui.button("Zoom In").clicked() {
-                    app.zoom_in();
-                    ui.close();
+                ui.menu_button("Zoom", |ui| {
+                    if ui.button("Zoom In").clicked() {
+                        app.zoom_in();
+                        ui.close();
+                    }
+                    if ui.button("Zoom Out").clicked() {
+                        app.zoom_out();
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(app.magnification != 1.0, egui::Button::new("Normal Size"))
+                        .clicked()
+                    {
+                        app.set_magnification(1.0);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(app.magnification != 4.0, egui::Button::new("Large Size"))
+                        .clicked()
+                    {
+                        app.set_magnification(4.0);
+                        ui.close();
+                    }
+                    if ui.button("Zoom To Window").clicked() {
+                        app.zoom_to_window();
+                        ui.close();
+                    }
+                    if ui.button("Custom...").clicked() {
+                        app.open_custom_zoom_dialog();
+                        ui.close();
+                    }
+                });
+                ui.separator();
+                let mut show_grid = app.show_grid;
+                if ui
+                    .add_enabled(
+                        app.magnification >= 4.0,
+                        egui::Checkbox::new(&mut show_grid, "Show Grid"),
+                    )
+                    .changed()
+                {
+                    app.toggle_grid();
                 }
-                if ui.button("Zoom Out").clicked() {
-                    app.zoom_out();
-                    ui.close();
+                let mut show_thumbnail = app.show_thumbnail;
+                if ui.checkbox(&mut show_thumbnail, "Show Thumbnail").changed() {
+                    app.show_thumbnail = show_thumbnail;
                 }
-                if ui.button("Reset Zoom").clicked() {
-                    app.magnification = 1.0;
-                    ui.close();
-                }
-                if ui.button("Adjust Zoom").clicked() {
-                    app.adjust_zoom();
+                ui.separator();
+                if ui.button("View Bitmap").clicked() {
+                    app.show_bitmap = true;
                     ui.close();
                 }
             });

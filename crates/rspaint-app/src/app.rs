@@ -1,6 +1,7 @@
 //! Application state and the `eframe::App` implementation.
 
 use eframe::egui;
+use eframe::egui_wgpu;
 use egui::{Color32, Key, Modifiers, PointerButton};
 use rspaint_core::draw::{
     draw_bezier, draw_ellipse, draw_line, draw_line_masked, draw_quadratic_curve, draw_rectangle,
@@ -12,7 +13,7 @@ use rspaint_core::{
     palette, transform, BlendMode, Brush, BrushShape, Color, Document, History, PixelBuffer,
 };
 
-use crate::canvas_renderer::{CanvasRenderer, Uniforms, Upload};
+use crate::canvas_renderer::{CanvasCallback, CanvasRenderer, Uniforms, Upload};
 use crate::tools::Tool;
 use crate::{theme, ui};
 
@@ -372,6 +373,16 @@ pub struct PaintApp {
     pub paint_blend: BlendMode,
     /// Opacity of the pixel grid, as a percentage (0-100).
     pub grid_opacity: u32,
+    /// Whether the pixel grid is shown (View > Show Grid, Ctrl+G).
+    pub show_grid: bool,
+    /// Whether the thumbnail window is shown (View > Show Thumbnail).
+    pub show_thumbnail: bool,
+    /// Whether the full-screen bitmap view is shown (View > View Bitmap).
+    pub show_bitmap: bool,
+    /// Whether the Custom Zoom dialog is open.
+    pub show_custom_zoom: bool,
+    /// The zoom percentage entered in the Custom Zoom dialog.
+    pub custom_zoom_percent: f32,
     /// Outliner: border thickness in pixels.
     pub outliner_size: u32,
     /// Outliner: whether to fill concave corners with the extra color.
@@ -527,6 +538,10 @@ pub struct PaintApp {
     canvas_dirty: bool,
     /// Region changed since the last upload, used for partial texture updates.
     dirty_rect: Option<RectI>,
+    /// Set when the document changed since the thumbnail was last rebuilt.
+    thumbnail_dirty: bool,
+    /// The downscaled preview texture for the thumbnail window.
+    thumbnail: Option<egui::TextureHandle>,
     /// Whether the custom wgpu renderer was initialized.
     has_gpu: bool,
     /// Whether the render target expects linear (sRGB) output.
@@ -572,6 +587,11 @@ impl PaintApp {
             fill_style: ShapeFill::Outline,
             paint_blend: BlendMode::Blend,
             grid_opacity: 20,
+            show_grid: false,
+            show_thumbnail: false,
+            show_bitmap: false,
+            show_custom_zoom: false,
+            custom_zoom_percent: 100.0,
             outliner_size: 1,
             outliner_concave: false,
             outliner_color: Color::WHITE,
@@ -651,6 +671,8 @@ impl PaintApp {
             rng: Rng(0x1234_5678),
             canvas_dirty: true,
             dirty_rect: None,
+            thumbnail_dirty: true,
+            thumbnail: None,
             has_gpu,
             srgb_output,
         }
@@ -2834,21 +2856,69 @@ impl PaintApp {
     /// Centered when the scaled image also fits the viewport width; otherwise
     /// aligned to the top-left.
     pub fn adjust_zoom(&mut self) {
-        let (width, height) = (self.document.width(), self.document.height());
+        let height = self.document.height();
         if self.viewport_size.y > 0.0 && height > 0 {
             let magnification =
                 (self.viewport_size.y / height as f32).clamp(MIN_MAGNIFICATION, MAX_MAGNIFICATION);
             self.magnification = magnification;
         }
+        self.center_view();
+    }
+
+    /// Centers the canvas along each axis when it fits, else pins it to the
+    /// top-left (matching JS Paint's scroll clamping).
+    fn center_view(&mut self) {
         let scaled = egui::vec2(
-            width as f32 * self.magnification,
-            height as f32 * self.magnification,
+            self.document.width() as f32 * self.magnification,
+            self.document.height() as f32 * self.magnification,
         );
-        self.pan = if scaled.x <= self.viewport_size.x {
-            (self.viewport_size - scaled) / 2.0
-        } else {
-            egui::Vec2::ZERO
-        };
+        self.pan = egui::vec2(
+            if scaled.x <= self.viewport_size.x {
+                (self.viewport_size.x - scaled.x) / 2.0
+            } else {
+                0.0
+            },
+            if scaled.y <= self.viewport_size.y {
+                (self.viewport_size.y - scaled.y) / 2.0
+            } else {
+                0.0
+            },
+        );
+    }
+
+    /// Toggles the pixel grid (View > Show Grid).
+    pub fn toggle_grid(&mut self) {
+        self.show_grid = !self.show_grid;
+    }
+
+    /// Sets the zoom, keeping the canvas point at the viewport top-left fixed.
+    pub fn set_magnification(&mut self, mag: f32) {
+        let mag = mag.clamp(MIN_MAGNIFICATION, MAX_MAGNIFICATION);
+        if (mag - self.magnification).abs() < f32::EPSILON {
+            return;
+        }
+        self.pan *= mag / self.magnification;
+        self.magnification = mag;
+    }
+
+    /// Zooms so the whole picture fits within the viewport.
+    pub fn zoom_to_window(&mut self) {
+        let (width, height) = (self.document.width(), self.document.height());
+        if self.viewport_size.x > 0.0 && self.viewport_size.y > 0.0 && width > 0 && height > 0 {
+            let margin = 30.0;
+            let mag = ((self.viewport_size.x - margin) / width as f32)
+                .min((self.viewport_size.y - margin) / height as f32);
+            // Round down to an integer percent, as the Custom Zoom dialog expects.
+            let mag = (100.0 * mag).floor() / 100.0;
+            self.magnification = mag.clamp(MIN_MAGNIFICATION, MAX_MAGNIFICATION);
+        }
+        self.center_view();
+    }
+
+    /// Opens the Custom Zoom dialog, seeded with the current zoom.
+    pub fn open_custom_zoom_dialog(&mut self) {
+        self.custom_zoom_percent = (self.magnification * 100.0).round();
+        self.show_custom_zoom = true;
     }
 
     /// Records the canvas viewport size (used for the initial zoom on open).
@@ -3400,6 +3470,7 @@ impl PaintApp {
     fn mark_full(&mut self) {
         self.canvas_dirty = true;
         self.dirty_rect = None;
+        self.thumbnail_dirty = true;
     }
 
     fn mark_rect(&mut self, rect: RectI) {
@@ -3407,6 +3478,7 @@ impl PaintApp {
             Some(existing) => existing.union(rect),
             None => rect,
         });
+        self.thumbnail_dirty = true;
     }
 
     /// Marks the bounding box of a line segment expanded by a radius.
@@ -3488,7 +3560,7 @@ impl PaintApp {
                     tool.name()
                 },
                 color_eraser,
-                base: None,
+                base: Some(self.document.buffer.clone()),
                 preview_rect: None,
             });
             // Fresh per-stroke mask so a single pass paints each pixel once.
@@ -3542,6 +3614,25 @@ impl PaintApp {
         if let Some(stroke) = self.stroke.take() {
             self.commit(stroke.name);
         }
+    }
+
+    /// Whether a stroke is currently being drawn.
+    pub fn has_stroke(&self) -> bool {
+        self.stroke.is_some()
+    }
+
+    /// Quick undo: abandons the active stroke, restoring the pre-stroke canvas
+    /// without recording a history entry (triggered by pressing the other mouse
+    /// button mid-stroke).
+    pub fn cancel_stroke(&mut self) {
+        let Some(stroke) = self.stroke.take() else {
+            return;
+        };
+        if let Some(base) = stroke.base {
+            self.document.buffer = base;
+        }
+        self.stroke_painted.clear();
+        self.mark_full();
     }
 
     /// The effective end point of a shape, applying the Shift constraint.
@@ -3932,6 +4023,10 @@ impl PaintApp {
                 self.show_flip_rotate = true;
             } else if i.consume_key(Modifiers::CTRL, Key::W) {
                 self.show_stretch_skew = true;
+            } else if i.consume_key(Modifiers::CTRL, Key::G) {
+                self.toggle_grid();
+            } else if i.consume_key(Modifiers::CTRL, Key::F) {
+                self.show_bitmap = !self.show_bitmap;
             } else if copy_cmd {
                 self.copy_selection();
             } else if paste_cmd {
@@ -4094,7 +4189,7 @@ impl PaintApp {
             cursor,
             flags: [
                 bool_f32(self.document.transparent),
-                bool_f32(magnification >= 8.0),
+                bool_f32(self.show_grid && magnification >= 4.0),
                 bool_f32(show_cursor),
                 bool_f32(self.srgb_output),
             ],
@@ -4186,7 +4281,10 @@ impl eframe::App for PaintApp {
         self.show_history_window(ctx);
         self.show_flip_rotate_window(ctx);
         self.show_stretch_skew_window(ctx);
+        self.show_custom_zoom_window(ctx);
+        self.show_thumbnail_window(ctx);
         self.show_error_window(ctx);
+        self.show_bitmap_view(ctx);
     }
 }
 
@@ -4314,6 +4412,149 @@ impl PaintApp {
             self.apply_flip_rotate();
         } else if cancel || !open {
             self.show_flip_rotate = false;
+        }
+    }
+
+    fn show_custom_zoom_window(&mut self, ctx: &egui::Context) {
+        if !self.show_custom_zoom {
+            return;
+        }
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let current = self.magnification * 100.0;
+        egui::Window::new("Custom Zoom")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Current zoom: {current}%"));
+                for pct in [100.0_f32, 200.0, 400.0, 600.0, 800.0] {
+                    let selected = (self.custom_zoom_percent - pct).abs() < 0.5;
+                    if ui.radio(selected, format!("{pct}%")).clicked() {
+                        self.custom_zoom_percent = pct;
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Custom:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.custom_zoom_percent)
+                            .range(10.0..=1000.0)
+                            .suffix("%"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if apply {
+            self.set_magnification(self.custom_zoom_percent / 100.0);
+            self.show_custom_zoom = false;
+        } else if cancel || !open {
+            self.show_custom_zoom = false;
+        }
+    }
+
+    /// A downscaled RGBA copy of the document that fits within `max_w` x `max_h`.
+    fn scaled_rgba(&self, max_w: f32, max_h: f32) -> ([usize; 2], Vec<u8>) {
+        let w = self.document.width().max(1);
+        let h = self.document.height().max(1);
+        let scale = (max_w / w as f32).min(max_h / h as f32);
+        let tw = ((w as f32 * scale).round().max(1.0) as u32).max(1);
+        let th = ((h as f32 * scale).round().max(1.0) as u32).max(1);
+        let mut bytes = Vec::with_capacity((tw * th * 4) as usize);
+        for y in 0..th {
+            let sy = (((y as f32 + 0.5) / scale) as u32).min(h - 1);
+            for x in 0..tw {
+                let sx = (((x as f32 + 0.5) / scale) as u32).min(w - 1);
+                let c = self
+                    .document
+                    .buffer
+                    .get(sx, sy)
+                    .unwrap_or(Color::TRANSPARENT);
+                bytes.extend_from_slice(&[c.r, c.g, c.b, c.a]);
+            }
+        }
+        ([tw as usize, th as usize], bytes)
+    }
+
+    fn show_thumbnail_window(&mut self, ctx: &egui::Context) {
+        if !self.show_thumbnail {
+            self.thumbnail = None;
+            return;
+        }
+        if self.thumbnail_dirty || self.thumbnail.is_none() {
+            let (size, bytes) = self.scaled_rgba(108.0, 92.0);
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, &bytes);
+            match &mut self.thumbnail {
+                Some(texture) => texture.set(image, egui::TextureOptions::NEAREST),
+                None => {
+                    self.thumbnail =
+                        Some(ctx.load_texture("thumbnail", image, egui::TextureOptions::NEAREST));
+                }
+            }
+            self.thumbnail_dirty = false;
+        }
+        let mut open = true;
+        egui::Window::new("Thumbnail")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if let Some(texture) = &self.thumbnail {
+                    let size = texture.size_vec2();
+                    ui.add(egui::Image::new((texture.id(), size)));
+                }
+            });
+        if !open {
+            self.show_thumbnail = false;
+        }
+    }
+
+    fn show_bitmap_view(&mut self, ctx: &egui::Context) {
+        if !self.show_bitmap {
+            return;
+        }
+        let exit = ctx.input(|i| {
+            i.key_pressed(Key::Escape) || (i.modifiers.command && i.key_pressed(Key::F))
+        });
+        let screen = ctx.viewport_rect();
+        let pixels_per_point = ctx.pixels_per_point();
+        let doc = egui::vec2(
+            self.document.width().max(1) as f32,
+            self.document.height().max(1) as f32,
+        );
+        let fit = (screen.width() / doc.x).min(screen.height() / doc.y);
+        let size = doc * fit;
+        let image_rect = egui::Rect::from_center_size(screen.center(), size);
+        let mut clicked = false;
+        egui::Area::new("bitmap-view".into())
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let (bg, response) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                ui.painter()
+                    .rect_filled(bg, 0.0, egui::Color32::from_gray(80));
+                clicked = response.clicked();
+                if self.has_gpu() && size.x > 0.0 && size.y > 0.0 {
+                    let mut uniforms =
+                        self.canvas_uniforms(fit, pixels_per_point, [0.0, 0.0, 1.0, 1.0]);
+                    uniforms.flags[1] = 0.0; // no pixel grid
+                    uniforms.flags[2] = 0.0; // no tool cursor
+                    let upload = self.take_pending_upload();
+                    ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                        image_rect,
+                        CanvasCallback { uniforms, upload },
+                    ));
+                }
+            });
+        if exit || clicked {
+            self.show_bitmap = false;
         }
     }
 
