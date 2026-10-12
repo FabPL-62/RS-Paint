@@ -171,7 +171,11 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         let upload = app.take_pending_upload();
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             visible,
-            CanvasCallback { uniforms, upload },
+            CanvasCallback {
+                window_id: app.window_id(),
+                uniforms,
+                upload,
+            },
         ));
     }
 

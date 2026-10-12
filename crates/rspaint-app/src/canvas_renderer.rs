@@ -199,20 +199,95 @@ pub struct Upload {
 }
 
 /// GPU resources for the canvas, stored in egui-wgpu's callback resources.
+///
+/// The pipeline, sampler and layout are shared; the texture and uniforms are
+/// kept per window (keyed by a window id) so several torn-off windows can each
+/// render their own canvas in the same frame.
 pub struct CanvasRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    windows: std::collections::HashMap<u64, WindowCanvas>,
+}
+
+/// Per-window canvas GPU resources.
+struct WindowCanvas {
     uniform_buffer: wgpu::Buffer,
     texture: Option<wgpu::Texture>,
     bind_group: Option<wgpu::BindGroup>,
     size: [u32; 2],
 }
 
+impl WindowCanvas {
+    fn new(device: &wgpu::Device) -> Self {
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rs-paint canvas uniforms"),
+            size: std::mem::size_of::<Uniforms>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            uniform_buffer,
+            texture: None,
+            bind_group: None,
+            size: [0, 0],
+        }
+    }
+
+    /// Creates the canvas texture and bind group if the size changed.
+    fn ensure_texture(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        size: [u32; 2],
+    ) {
+        if self.texture.is_some() && self.size == size {
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rs-paint canvas texture"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: CANVAS_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rs-paint canvas bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+            ],
+        });
+        self.texture = Some(texture);
+        self.bind_group = Some(bind_group);
+        self.size = size;
+    }
+}
+
 impl std::fmt::Debug for CanvasRenderer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CanvasRenderer")
-            .field("size", &self.size)
+            .field("windows", &self.windows.len())
             .finish_non_exhaustive()
     }
 }
@@ -300,70 +375,19 @@ impl CanvasRenderer {
             ..Default::default()
         });
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rs-paint canvas uniforms"),
-            size: std::mem::size_of::<Uniforms>() as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         Self {
             pipeline,
             bind_group_layout,
             sampler,
-            uniform_buffer,
-            texture: None,
-            bind_group: None,
-            size: [0, 0],
+            windows: std::collections::HashMap::new(),
         }
-    }
-
-    /// Creates the canvas texture and bind group if the size changed.
-    fn ensure_texture(&mut self, device: &wgpu::Device, size: [u32; 2]) {
-        if self.texture.is_some() && self.size == size {
-            return;
-        }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rs-paint canvas texture"),
-            size: wgpu::Extent3d {
-                width: size[0],
-                height: size[1],
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: CANVAS_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rs-paint canvas bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-            ],
-        });
-        self.texture = Some(texture);
-        self.bind_group = Some(bind_group);
-        self.size = size;
     }
 }
 
 /// The per-frame paint callback for the canvas.
 pub struct CanvasCallback {
+    /// Which window this canvas belongs to (its own texture/uniforms).
+    pub window_id: u64,
     pub uniforms: Uniforms,
     pub upload: Option<Upload>,
 }
@@ -380,14 +404,24 @@ impl CallbackTrait for CanvasCallback {
         let Some(renderer) = resources.get_mut::<CanvasRenderer>() else {
             return Vec::new();
         };
+        let CanvasRenderer {
+            bind_group_layout,
+            sampler,
+            windows,
+            ..
+        } = renderer;
+        let window = windows
+            .entry(self.window_id)
+            .or_insert_with(|| WindowCanvas::new(device));
+
         let size = [
             self.uniforms.canvas_mag[0].max(1.0) as u32,
             self.uniforms.canvas_mag[1].max(1.0) as u32,
         ];
-        renderer.ensure_texture(device, size);
+        window.ensure_texture(device, bind_group_layout, sampler, size);
 
         if let Some(upload) = &self.upload {
-            if let Some(texture) = renderer.texture.as_ref() {
+            if let Some(texture) = window.texture.as_ref() {
                 queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture,
@@ -415,7 +449,7 @@ impl CallbackTrait for CanvasCallback {
         }
 
         queue.write_buffer(
-            &renderer.uniform_buffer,
+            &window.uniform_buffer,
             0,
             bytemuck::bytes_of(&self.uniforms),
         );
@@ -431,7 +465,10 @@ impl CallbackTrait for CanvasCallback {
         let Some(renderer) = resources.get::<CanvasRenderer>() else {
             return;
         };
-        let Some(bind_group) = &renderer.bind_group else {
+        let Some(window) = renderer.windows.get(&self.window_id) else {
+            return;
+        };
+        let Some(bind_group) = &window.bind_group else {
             return;
         };
         render_pass.set_pipeline(&renderer.pipeline);

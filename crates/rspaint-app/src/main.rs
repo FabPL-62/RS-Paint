@@ -10,6 +10,7 @@ mod text;
 mod theme;
 mod tools;
 mod ui;
+mod workspace;
 
 fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
@@ -24,6 +25,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "RS Paint",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::PaintApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(workspace::Workspace::new(cc)))),
     )
 }

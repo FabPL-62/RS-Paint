@@ -328,14 +328,6 @@ pub enum PickTarget {
     Secondary,
 }
 
-/// The choice made in the close-confirmation dialog.
-#[derive(Clone, Copy)]
-enum Action {
-    Cancel,
-    SaveAndClose,
-    Exit,
-}
-
 /// The root application state.
 pub struct PaintApp {
     /// The image currently being edited.
@@ -512,10 +504,6 @@ pub struct PaintApp {
     skew_v: f64,
     /// Whether the About window is open.
     pub show_about: bool,
-    /// Whether the close-confirmation dialog is open.
-    show_close_confirm: bool,
-    /// Set once the user confirmed closing, to bypass the confirmation.
-    force_close: bool,
     /// Active temporary color-pick (Ctrl = primary, Alt = secondary).
     pick_hold: Option<PickTarget>,
     /// The loaded custom tool cursors.
@@ -549,10 +537,157 @@ pub struct PaintApp {
     has_gpu: bool,
     /// Whether the render target expects linear (sRGB) output.
     srgb_output: bool,
+    /// Which window (viewport) this tab belongs to, for the per-window canvas.
+    window_id: u64,
+}
+
+/// State shared across all tabs of a window: the active tool, colors, palette
+/// and tool options. Each tab keeps a copy that is synced on tab switches, so
+/// switching tabs keeps the tool/colors/options.
+#[derive(Clone)]
+pub struct Shared {
+    pub tool: Tool,
+    pub foreground: Color,
+    pub background: Color,
+    pub palette: Vec<Color>,
+    pub custom_colors: Vec<Color>,
+    pub brush_shape: BrushShape,
+    pub brush_size: u32,
+    pub eraser_size: u32,
+    pub eraser_shape: BrushShape,
+    pub airbrush_size: u32,
+    pub pencil_size: u32,
+    pub stroke_size: u32,
+    pub round_radius: u32,
+    pub fill_style: ShapeFill,
+    pub paint_blend: BlendMode,
+    pub grid_opacity: u32,
+    pub show_grid: bool,
+    pub outliner_size: u32,
+    pub outliner_concave: bool,
+    pub outliner_color: Color,
+    pub outliner_placement: BorderPlacement,
+    pub selection_transparent: bool,
+    pub magic_wand_tolerance: u8,
+    pub text_family: crate::text::FontFamily,
+    pub text_size: f32,
+    pub text_bold: bool,
+    pub text_italic: bool,
+    pub text_underline: bool,
+    pub text_vertical: bool,
+    pub text_transparent: bool,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            tool: Tool::Pencil,
+            foreground: Color::BLACK,
+            background: Color::WHITE,
+            palette: palette::default_palette(),
+            custom_colors: palette::default_custom_colors(),
+            brush_shape: BrushShape::Circle,
+            brush_size: 4,
+            eraser_size: 8,
+            eraser_shape: BrushShape::Square,
+            airbrush_size: 9,
+            pencil_size: 1,
+            stroke_size: 1,
+            round_radius: 10,
+            fill_style: ShapeFill::Outline,
+            paint_blend: BlendMode::Blend,
+            grid_opacity: 20,
+            show_grid: true,
+            outliner_size: 1,
+            outliner_concave: false,
+            outliner_color: Color::WHITE,
+            outliner_placement: BorderPlacement::Outside,
+            selection_transparent: false,
+            magic_wand_tolerance: 0,
+            text_family: crate::text::FontFamily::Sans,
+            text_size: 16.0,
+            text_bold: false,
+            text_italic: false,
+            text_underline: false,
+            text_vertical: false,
+            text_transparent: true,
+        }
+    }
 }
 
 impl PaintApp {
-    /// Creates the application and applies the default theme.
+    /// Captures the cross-tab shared state from this tab.
+    pub fn capture_shared(&self) -> Shared {
+        Shared {
+            tool: self.tool,
+            foreground: self.foreground,
+            background: self.background,
+            palette: self.palette.clone(),
+            custom_colors: self.custom_colors.clone(),
+            brush_shape: self.brush_shape,
+            brush_size: self.brush_size,
+            eraser_size: self.eraser_size,
+            eraser_shape: self.eraser_shape,
+            airbrush_size: self.airbrush_size,
+            pencil_size: self.pencil_size,
+            stroke_size: self.stroke_size,
+            round_radius: self.round_radius,
+            fill_style: self.fill_style,
+            paint_blend: self.paint_blend,
+            grid_opacity: self.grid_opacity,
+            show_grid: self.show_grid,
+            outliner_size: self.outliner_size,
+            outliner_concave: self.outliner_concave,
+            outliner_color: self.outliner_color,
+            outliner_placement: self.outliner_placement,
+            selection_transparent: self.selection_transparent,
+            magic_wand_tolerance: self.magic_wand_tolerance,
+            text_family: self.text_family,
+            text_size: self.text_size,
+            text_bold: self.text_bold,
+            text_italic: self.text_italic,
+            text_underline: self.text_underline,
+            text_vertical: self.text_vertical,
+            text_transparent: self.text_transparent,
+        }
+    }
+
+    /// Applies cross-tab shared state to this tab.
+    pub fn apply_shared(&mut self, shared: &Shared) {
+        self.tool = shared.tool;
+        self.foreground = shared.foreground;
+        self.background = shared.background;
+        self.palette = shared.palette.clone();
+        self.custom_colors = shared.custom_colors.clone();
+        self.brush_shape = shared.brush_shape;
+        self.brush_size = shared.brush_size;
+        self.eraser_size = shared.eraser_size;
+        self.eraser_shape = shared.eraser_shape;
+        self.airbrush_size = shared.airbrush_size;
+        self.pencil_size = shared.pencil_size;
+        self.stroke_size = shared.stroke_size;
+        self.round_radius = shared.round_radius;
+        self.fill_style = shared.fill_style;
+        self.paint_blend = shared.paint_blend;
+        self.grid_opacity = shared.grid_opacity;
+        self.show_grid = shared.show_grid;
+        self.outliner_size = shared.outliner_size;
+        self.outliner_concave = shared.outliner_concave;
+        self.outliner_color = shared.outliner_color;
+        self.outliner_placement = shared.outliner_placement;
+        self.selection_transparent = shared.selection_transparent;
+        self.magic_wand_tolerance = shared.magic_wand_tolerance;
+        self.text_family = shared.text_family;
+        self.text_size = shared.text_size;
+        self.text_bold = shared.text_bold;
+        self.text_italic = shared.text_italic;
+        self.text_underline = shared.text_underline;
+        self.text_vertical = shared.text_vertical;
+        self.text_transparent = shared.text_transparent;
+    }
+
+    /// Creates the first editor and applies the default theme, registering the
+    /// GPU renderer once.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
 
@@ -569,6 +704,11 @@ impl PaintApp {
             has_gpu = true;
         }
 
+        Self::new_blank(has_gpu, srgb_output, &cc.egui_ctx)
+    }
+
+    /// Creates a fresh, empty editor (a new tab).
+    pub fn new_blank(has_gpu: bool, srgb_output: bool, ctx: &egui::Context) -> Self {
         let document = Document::default();
         let history = History::new(document.buffer.clone(), "New");
         Self {
@@ -659,10 +799,8 @@ impl PaintApp {
             skew_h: 0.0,
             skew_v: 0.0,
             show_about: false,
-            show_close_confirm: false,
-            force_close: false,
             pick_hold: None,
-            cursors: crate::cursors::CursorSet::load(&cc.egui_ctx),
+            cursors: crate::cursors::CursorSet::load(ctx),
             show_attributes: false,
             attributes_width: rspaint_core::document::DEFAULT_CANVAS_WIDTH,
             attributes_height: rspaint_core::document::DEFAULT_CANVAS_HEIGHT,
@@ -679,12 +817,46 @@ impl PaintApp {
             thumbnail: None,
             has_gpu,
             srgb_output,
+            window_id: 0,
         }
     }
 
     /// Whether the custom wgpu renderer is available.
     pub fn has_gpu(&self) -> bool {
         self.has_gpu
+    }
+
+    /// Whether the render target expects linear (sRGB) output.
+    pub fn srgb_output(&self) -> bool {
+        self.srgb_output
+    }
+
+    /// The window (viewport) id this tab belongs to, used to pick the canvas
+    /// GPU resources.
+    pub fn window_id(&self) -> u64 {
+        self.window_id
+    }
+
+    /// Sets the window (viewport) id this tab belongs to.
+    pub fn set_window_id(&mut self, id: u64) {
+        self.window_id = id;
+    }
+
+    /// Whether this document has unsaved changes.
+    pub fn is_modified(&self) -> bool {
+        self.document.modified
+    }
+
+    /// The tab bar label for this document (name plus a modified marker).
+    pub fn tab_label(&self) -> String {
+        let marker = if self.document.modified { "*" } else { "" };
+        format!("{}{marker}", self.document.name)
+    }
+
+    /// Forces a full canvas re-upload on the next frame. The GPU canvas texture
+    /// is shared between tabs, so the newly shown tab must be re-uploaded.
+    pub fn invalidate_canvas(&mut self) {
+        self.mark_full();
     }
 
     /// The size of the active tool's cursor in image pixels.
@@ -4347,23 +4519,21 @@ fn bool_f32(value: bool) -> f32 {
     }
 }
 
-impl eframe::App for PaintApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Intercept the window close when there are unsaved changes.
-        if ctx.input(|i| i.viewport().close_requested())
-            && self.document.modified
-            && !self.force_close
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.show_close_confirm = true;
-        }
-
+impl PaintApp {
+    /// Draws the top of this tab's editor UI: the menu bar and the tool box.
+    /// The tab strip is drawn by the workspace between this and
+    /// [`PaintApp::update_editor_bottom`].
+    pub fn update_editor_top(&mut self, ctx: &egui::Context) {
         self.handle_shortcuts(ctx);
         self.update_pick_hold(ctx);
         self.update_title(ctx);
 
         ui::menubar::show(self, ctx);
         ui::toolbox::show(self, ctx);
+    }
+
+    /// Draws the rest of the editor: status bar, color box, canvas and dialogs.
+    pub fn update_editor_bottom(&mut self, ctx: &egui::Context) {
         ui::status_bar::show(self, ctx);
         ui::colorbox::show(self, ctx);
         ui::color_picker::show(self, ctx);
@@ -4384,7 +4554,6 @@ impl eframe::App for PaintApp {
                 });
         }
 
-        self.show_close_confirm_window(ctx);
         self.show_attributes_window(ctx);
         self.show_history_window(ctx);
         self.show_flip_rotate_window(ctx);
@@ -4657,7 +4826,11 @@ impl PaintApp {
                     let upload = self.take_pending_upload();
                     ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                         image_rect,
-                        CanvasCallback { uniforms, upload },
+                        CanvasCallback {
+                            window_id: self.window_id(),
+                            uniforms,
+                            upload,
+                        },
                     ));
                 }
             });
@@ -4703,59 +4876,6 @@ impl PaintApp {
     }
 
     /// The "unsaved changes" confirmation shown when closing the window.
-    fn show_close_confirm_window(&mut self, ctx: &egui::Context) {
-        if !self.show_close_confirm {
-            return;
-        }
-        let mut open = true;
-        let mut action = None;
-        egui::Window::new("Cerrar RS Paint")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.set_min_width(360.0);
-                ui.add_space(8.0);
-                ui.label("¿Seguro que quieres cerrar el programa?");
-                ui.label("Los cambios no guardados se perderán.");
-                ui.add_space(14.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancelar").clicked() {
-                        action = Some(Action::Cancel);
-                    }
-                    if ui.button("Guardar y salir").clicked() {
-                        action = Some(Action::SaveAndClose);
-                    }
-                    if ui.button("Salir").clicked() {
-                        action = Some(Action::Exit);
-                    }
-                });
-                ui.add_space(4.0);
-            });
-        if !open {
-            action = Some(Action::Cancel);
-        }
-
-        match action {
-            Some(Action::Cancel) => self.show_close_confirm = false,
-            Some(Action::SaveAndClose) => {
-                self.save();
-                if !self.document.modified {
-                    self.force_close = true;
-                    self.show_close_confirm = false;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
-            Some(Action::Exit) => {
-                self.force_close = true;
-                self.show_close_confirm = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            None => {}
-        }
-    }
-
     fn show_error_window(&mut self, ctx: &egui::Context) {
         let Some(message) = self.error_message.clone() else {
             return;
