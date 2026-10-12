@@ -378,14 +378,9 @@ fn paint_selection_box(
             );
         }
     } else {
-        // Free-form / combined: dark-blue marching-ants box with cyan handles.
-        let dark_blue = egui::Color32::from_rgb(20, 40, 150);
-        painter.rect_stroke(
-            box_rect,
-            0.0,
-            egui::Stroke::new(1.0, dark_blue),
-            egui::StrokeKind::Outside,
-        );
+        // Free-form / combined: a marching-ants box with cyan handles. The box
+        // is ants-only (matching the selection outline) so that where the two
+        // coincide they read as a single line.
         let poly = [
             box_rect.min,
             egui::pos2(box_rect.max.x, box_rect.min.y),
@@ -934,11 +929,10 @@ fn handle_selection(
             } else if alt && on_canvas(pos) {
                 // Alt + tap removes a single pixel from the selection.
                 app.select_pixel(p, false, true);
-            } else if !on_canvas(pos) {
+            } else if !on_canvas(pos) || !app.point_in_selection(p) {
+                // A plain tap clears the selection instead of leaving a stray
+                // 1x1 selection (Shift + tap still adds a single pixel).
                 app.deselect();
-            } else if !app.point_in_selection(p) {
-                // A plain tap on a pixel selects just that pixel (1x1).
-                app.select_pixel(p, false, false);
             }
         }
     }
@@ -1217,27 +1211,41 @@ const ANTS_DASH: f32 = 4.0;
 
 /// Draws one marching-ants segment: alternating black/white dashes offset by
 /// `phase`.
+///
+/// The dash pattern is anchored to the screen coordinate along the segment's
+/// dominant axis (not to the segment's own start), so segments that lie on the
+/// same line -- e.g. the transform box edge and the selection outline it sits
+/// on -- render as a single set of ants instead of two offset sets.
 fn paint_ant_segment(painter: &egui::Painter, a: Pos2, b: Pos2, phase: f32) {
-    let black = egui::Stroke::new(1.0, egui::Color32::BLACK);
-    let white = egui::Stroke::new(1.0, egui::Color32::WHITE);
     let delta = b - a;
-    let length = delta.length();
-    if length <= 0.0 {
+    if delta.length() <= 0.0 {
         return;
     }
-    let dir = delta / length;
-    let mut t = -phase;
-    while t < length {
-        let black_end = (t + ANTS_DASH).min(length);
-        if black_end > t.max(0.0) {
-            painter.line_segment([a + dir * t.max(0.0), a + dir * black_end], black);
+    let black = egui::Stroke::new(1.0, egui::Color32::BLACK);
+    let white = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    let horizontal = delta.x.abs() >= delta.y.abs();
+    let (lo, hi, fixed) = if horizontal {
+        (a.x.min(b.x), a.x.max(b.x), a.y)
+    } else {
+        (a.y.min(b.y), a.y.max(b.y), a.x)
+    };
+    let dash = ANTS_DASH;
+    let first = ((lo - phase) / dash).floor() as i32;
+    let last = ((hi - phase) / dash).ceil() as i32;
+    for k in first..last {
+        let cell_start = (k as f32) * dash + phase;
+        let start = cell_start.max(lo);
+        let end = (cell_start + dash).min(hi);
+        if end <= start {
+            continue;
         }
-        let white_start = (t + ANTS_DASH).max(0.0);
-        let white_end = (t + ANTS_DASH * 2.0).min(length);
-        if white_end > white_start {
-            painter.line_segment([a + dir * white_start, a + dir * white_end], white);
-        }
-        t += ANTS_DASH * 2.0;
+        let stroke = if k % 2 == 0 { black } else { white };
+        let (p0, p1) = if horizontal {
+            (egui::pos2(start, fixed), egui::pos2(end, fixed))
+        } else {
+            (egui::pos2(fixed, start), egui::pos2(fixed, end))
+        };
+        painter.line_segment([p0, p1], stroke);
     }
 }
 

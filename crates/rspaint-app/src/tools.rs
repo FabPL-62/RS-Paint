@@ -148,7 +148,6 @@ impl Tool {
                 | Tool::Brush
                 | Tool::Fill
                 | Tool::Airbrush
-                | Tool::Eraser
                 | Tool::Line
                 | Tool::Curve
                 | Tool::Rectangle

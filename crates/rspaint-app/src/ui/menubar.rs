@@ -130,7 +130,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                 let mut show_grid = app.show_grid;
                 if ui
                     .add_enabled(
-                        app.magnification >= 4.0,
+                        app.magnification >= 8.0,
                         egui::Checkbox::new(&mut show_grid, "Show Grid"),
                     )
                     .changed()

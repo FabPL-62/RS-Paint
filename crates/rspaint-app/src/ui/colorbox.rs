@@ -52,6 +52,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                     {
                         app.foreground.a =
                             (percent / 100.0 * 255.0).round().clamp(0.0, 255.0) as u8;
+                        app.note_transparency(app.foreground);
                     }
                 });
             });

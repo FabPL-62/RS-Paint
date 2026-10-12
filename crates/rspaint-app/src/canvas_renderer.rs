@@ -108,14 +108,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let texel = textureSample(tex, samp, uv);
     var color = texel.rgb;
 
-    // Transparency checkerboard.
-    if u.flags.x > 0.5 {
-        let cell = floor(in.pos.xy / checker_px);
-        let parity = fract((cell.x + cell.y) * 0.5) * 2.0;
-        // Dark enough that the pixel grid (a light line over dark) is visible.
-        let checker = mix(CHECKER_LIGHT, CHECKER_DARK, parity);
-        color = mix(vec3<f32>(checker), texel.rgb, texel.a);
-    }
+    // Transparency checkerboard, composited per-pixel from the alpha so any
+    // transparent pixel reads as transparency (regardless of the document's
+    // "transparent" flag). Opaque pixels are unaffected.
+    let cell = floor(in.pos.xy / checker_px);
+    let parity = fract((cell.x + cell.y) * 0.5) * 2.0;
+    // Dark enough that the pixel grid (a light line over dark) is visible.
+    let checker = mix(CHECKER_LIGHT, CHECKER_DARK, parity);
+    color = mix(vec3<f32>(checker), texel.rgb, texel.a);
 
     // Pixel grid, drawn once a canvas pixel is at least 8 screen px wide.
     // The line contrasts with whatever is underneath: the pixel color, or the

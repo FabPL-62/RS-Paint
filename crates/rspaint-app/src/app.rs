@@ -590,7 +590,7 @@ impl PaintApp {
             fill_style: ShapeFill::Outline,
             paint_blend: BlendMode::Blend,
             grid_opacity: 20,
-            show_grid: false,
+            show_grid: true,
             show_thumbnail: false,
             show_bitmap: false,
             show_custom_zoom: false,
@@ -1290,8 +1290,9 @@ impl PaintApp {
         };
         let base = Color::from_hsv(picker.hue, picker.sat, picker.val);
         let alpha = (picker.alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
-        let color = Color::rgba(base.r, base.g, base.b, alpha);
         let target = picker.target;
+        let color = Color::rgba(base.r, base.g, base.b, alpha);
+        self.note_transparency(color);
         match target {
             ColorTarget::Foreground => self.foreground = color,
             ColorTarget::Background => self.background = color,
@@ -1322,7 +1323,17 @@ impl PaintApp {
     /// Records a color as recently used, filling the custom row left to right.
     ///
     /// Colors already present in the palette or the custom row are skipped.
+    /// Enables canvas transparency once a color with partial or zero alpha is
+    /// introduced (set or used), so the document supports and displays
+    /// transparency. Never auto-disables it.
+    pub fn note_transparency(&mut self, color: Color) {
+        if color.a < 255 {
+            self.document.transparent = true;
+        }
+    }
+
     pub fn note_used_color(&mut self, color: Color) {
+        self.note_transparency(color);
         let count = self.custom_colors.len();
         if count == 0 {
             return;
@@ -1855,11 +1866,9 @@ impl PaintApp {
     }
 
     fn selection_fill(&self) -> Color {
-        if self.document.transparent {
-            Color::TRANSPARENT
-        } else {
-            self.background
-        }
+        // The area a selection is cut/moved from is filled with the secondary
+        // color, so its alpha (opaque, partial or fully transparent) is honored.
+        self.background
     }
 
     /// Begins a selection drag: moving an existing selection or creating a new
@@ -2034,7 +2043,8 @@ impl PaintApp {
                 let y = start.1.min(end.1);
                 let width = (start.0.max(end.0) - x + 1) as u32;
                 let height = (start.1.max(end.1) - y + 1) as u32;
-                if width < 2 || height < 2 {
+                // Reject only a single pixel; 1px-wide/tall lines are allowed.
+                if width < 2 && height < 2 {
                     None
                 } else {
                     let pixels = rspaint_core::selection::extract_rect(
@@ -2873,6 +2883,7 @@ impl PaintApp {
         };
         self.creating_selection = None;
         let fill = self.selection_fill();
+        self.note_transparency(fill);
         let background = if self.selection_transparent {
             Some(self.background)
         } else {
@@ -3593,19 +3604,14 @@ impl PaintApp {
     }
 
     fn canvas_clear_color(&self) -> Color {
-        if self.document.transparent {
-            Color::TRANSPARENT
-        } else {
-            self.background
-        }
+        // Clear Image fills with the secondary color (its alpha is honored).
+        self.background
     }
 
     fn eraser_color(&self) -> Color {
-        if self.document.transparent {
-            Color::TRANSPARENT
-        } else {
-            self.background
-        }
+        // The eraser paints the secondary color, so its alpha (opaque, partial
+        // or fully transparent) is always honored.
+        self.background
     }
 
     /// Starts a stroke at `p` using the given mouse button.
@@ -3802,8 +3808,10 @@ impl PaintApp {
                 );
             }
             Tool::Eraser => {
+                // Erasing always overwrites (including alpha), so a transparent
+                // erase color actually clears pixels instead of being a no-op.
                 let brush =
-                    Brush::new(self.eraser_shape, self.eraser_size).with_blend(self.paint_blend);
+                    Brush::new(self.eraser_shape, self.eraser_size).with_blend(BlendMode::Replace);
                 if self
                     .stroke
                     .as_ref()
@@ -3823,6 +3831,7 @@ impl PaintApp {
                     );
                 } else {
                     let color = self.eraser_color();
+                    self.note_transparency(color);
                     let width = self.document.width();
                     draw_line_masked(
                         &mut self.document.buffer,
@@ -4288,7 +4297,7 @@ impl PaintApp {
             cursor,
             flags: [
                 bool_f32(self.document.transparent),
-                bool_f32(self.show_grid && magnification >= 4.0),
+                bool_f32(self.show_grid && magnification >= 8.0),
                 bool_f32(show_cursor),
                 bool_f32(self.srgb_output),
             ],
