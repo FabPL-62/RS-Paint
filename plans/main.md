@@ -240,10 +240,11 @@ sin pérdidas de calidad en un flujo completo.
 - [x] Zoom Custom / Zoom To Window, View Bitmap (Ctrl+F), Thumbnail.
 - [x] Draw Opaque, brush scaling con numpad (+/-); quick undo con segundo botón.
 
-### Fase 3 - Texto y edición avanzada
-- [ ] Text tool con `cosmic-text`, text toolbar (fuente, tamaño, negrita/cursiva/subrayado).
-- [ ] Caja de texto en canvas, preview a cualquier zoom, commit undoable.
-- [ ] Copy/Cut/Paste vía `arboard`; Paste From / Copy To.
+### Fase 3 - Texto y edición avanzada — EN CURSO
+- [x] Text tool con `ab_glyph`, toolbar (fuente Sans/Serif/Mono, tamaño, negrita/cursiva,
+  vertical, transparente); [ ] subrayado.
+- [x] Caja de texto en canvas, preview a cualquier zoom, commit undoable.
+- [x] Copy/Cut/Paste vía `arboard`; Paste From / Copy To.
 - [ ] Undo no lineal completo con regiones (diferencias).
 
 ### Fase 4 - Paletas, formatos y theming

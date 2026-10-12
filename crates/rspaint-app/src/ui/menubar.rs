@@ -74,6 +74,17 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                     app.paste_clipboard();
                     ui.close();
                 }
+                if ui.button("Paste From...").clicked() {
+                    app.paste_from_file();
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(has_selection, egui::Button::new("Copy To..."))
+                    .clicked()
+                {
+                    app.copy_to_file();
+                    ui.close();
+                }
                 ui.separator();
                 if ui.button("History").clicked() {
                     app.show_history = true;

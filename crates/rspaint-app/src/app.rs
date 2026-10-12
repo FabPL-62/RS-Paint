@@ -2220,8 +2220,6 @@ impl PaintApp {
     /// in-app copy. The pasted content stays a floating selection until the
     /// user clicks outside it.
     pub fn paste_clipboard(&mut self) {
-        self.deselect();
-
         let content = match crate::clipboard::read_image() {
             Some(pixels) => {
                 let count = (pixels.width() * pixels.height()) as usize;
@@ -2237,7 +2235,76 @@ impl PaintApp {
                 None => return,
             },
         };
-        let (pixels, mut mask_bits, outline, mask) = content;
+        let (pixels, mask_bits, outline, mask) = content;
+        self.paste_pixels(pixels, mask_bits, outline, mask, "Paste");
+    }
+
+    /// Edit > Paste From: loads an image file and pastes it as a floating selection.
+    pub fn paste_from_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Images",
+                &["png", "bmp", "dib", "jpg", "jpeg", "gif", "tif", "tiff"],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.error_message = Some(format!("Failed to read file: {error}"));
+                return;
+            }
+        };
+        match rspaint_core::io::decode_image(&bytes) {
+            Ok(pixels) => {
+                let count = (pixels.width() * pixels.height()) as usize;
+                self.paste_pixels(pixels, vec![true; count], Vec::new(), false, "Paste");
+            }
+            Err(error) => self.error_message = Some(format!("Failed to open image: {error}")),
+        }
+    }
+
+    /// Edit > Copy To: saves the current selection to an image file.
+    pub fn copy_to_file(&mut self) {
+        let Some(selection) = self.selection.as_ref() else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("PNG image", &["png"])
+            .add_filter("BMP image", &["bmp", "dib"])
+            .set_file_name("selection.png")
+            .save_file()
+        else {
+            return;
+        };
+        let format = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(rspaint_core::io::SaveFormat::from_extension)
+            .unwrap_or(rspaint_core::io::SaveFormat::Png);
+        match rspaint_core::io::encode(&selection.pixels, format) {
+            Ok(bytes) => {
+                if let Err(error) = std::fs::write(&path, bytes) {
+                    self.error_message = Some(format!("Failed to save: {error}"));
+                }
+            }
+            Err(error) => self.error_message = Some(format!("Failed to encode image: {error}")),
+        }
+    }
+
+    /// Pastes a bitmap as a floating selection centered on the pointer (or the
+    /// canvas center), clamped so it stays inside the canvas.
+    fn paste_pixels(
+        &mut self,
+        pixels: PixelBuffer,
+        mut mask_bits: Vec<bool>,
+        outline: Vec<(i32, i32)>,
+        mask: bool,
+        name: &'static str,
+    ) {
+        self.deselect();
         let width = pixels.width();
         let height = pixels.height();
         if width == 0 || height == 0 {
@@ -2289,7 +2356,7 @@ impl PaintApp {
             base: Some(base),
             rotation_origin: None,
             rotation: 0.0,
-            name: "Paste",
+            name,
         });
         self.mark_full();
     }
