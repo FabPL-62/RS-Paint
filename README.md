@@ -16,7 +16,10 @@ testeable y sin depender del navegador.
   imagen y de selección, Text, Curve, Polygon, redimensionado de la hoja, etc.
 - **Fase 3** (texto y portapapeles): Text tool y copy/paste implementados.
 - Pendiente (fases 4–5): formatos de paleta, más formatos de guardado, temas,
-  i18n, persistencia y extras (GIF del historial, ayuda, multiusuario).
+  persistencia y extras (GIF del historial, ayuda, multiusuario).
+- **Interfaz**: tema oscuro de editor, pestañas con indicador activo, herramientas
+  con iconos en dos columnas y tooltips descriptivos. Español e inglés disponibles
+  desde el menú **Idioma / Language**.
 
 El plan de desarrollo por fases está en [`plans/main.md`](plans/main.md).
 
@@ -77,13 +80,25 @@ rspaint/
         history.rs        # historial no lineal (grafo)
         palette.rs        # paletas por defecto/básicas
         io.rs             # leer/escribir imágenes (PNG, BMP, JPEG, GIF, TIFF)
+    rspaint-editor/       # componente de edición sin GUI ni GPU
+      src/
+        lib.rs            # Editor, ToolSettings y estado privado de operaciones
+        drawing.rs        # trazos, formas, curva y polígono
+        text_edit.rs      # cajas de texto y preview rasterizado
+        selection*.rs     # selecciones y sus transformaciones
+        transforms.rs     # edición de imagen, historial y regiones modificadas
+        viewport.rs       # zoom y redimensionado del lienzo
+        tools.rs          # herramientas y categorías
+        text.rs           # rasterizado de texto (ab_glyph)
     rspaint-app/          # aplicación de escritorio (egui + wgpu)
       assets/cursors/     # cursores por herramienta (MIT) de JS Paint
+      assets/tools/       # iconos de herramientas
+      locales/            # catálogos es.json y en.json
       src/
         main.rs           # arranque de la ventana
-        app.rs            # estado y lógica de la app
-        tools.rs          # definición de herramientas
-        text.rs           # rasterizado de texto (ab_glyph)
+        app.rs            # composición de Editor y estado de presentación
+        app/              # diálogos, entrada, archivos y presentación
+        i18n.rs           # selección de idioma y resolución de mensajes
         cursors.rs        # cursores por herramienta (imágenes)
         clipboard.rs      # portapapeles del sistema (imágenes)
         canvas_renderer.rs# render del canvas con un pase wgpu propio
@@ -92,8 +107,10 @@ rspaint/
                           # canvas, status bar
 ```
 
-El núcleo (`rspaint-core`) **no depende de la GUI**: la app depende del núcleo y
-nunca al revés. Esto permite testear toda la lógica de imagen sin abrir ventanas.
+El núcleo (`rspaint-core`) y el componente de edición (`rspaint-editor`)
+**no dependen de la GUI**. La UI configura opciones y envía operaciones al editor.
+La separación, las reglas para extenderla y cómo añadir idiomas se documentan
+en [`docs/architecture.md`](docs/architecture.md).
 
 ## Funcionalidades
 
@@ -137,6 +154,11 @@ nunca al revés. Esto permite testear toda la lógica de imagen sin abrir ventan
 - **Archivo**: New, Open, Save, Save As (PNG y BMP para guardar; PNG, BMP,
   JPEG, GIF y TIFF para abrir). Al cerrar con cambios sin guardar se pide
   confirmación (Cancelar / Guardar y salir / Salir).
+  Abrir una imagen crea y activa una pestaña nueva, conservando el documento
+  anterior y sus cambios sin guardar. Si la pestaña temporal inicial sigue
+  intacta y en blanco, se reutiliza para la primera imagen abierta.
+  También se pueden arrastrar y soltar imágenes sobre la ventana: la primera
+  reutiliza una hoja base intacta y las demás se abren en pestañas nuevas.
 - **Historial**: undo/redo no lineal con ventana **History**.
 
 ### Atajos principales

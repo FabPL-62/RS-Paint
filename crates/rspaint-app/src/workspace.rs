@@ -4,6 +4,7 @@
 use eframe::egui;
 
 use crate::app::{PaintApp, Shared};
+use crate::ui::tabs::{tab_widget, TAB_HEIGHT};
 
 /// A pending action requested by the tab bar in the current frame.
 enum TabAction {
@@ -71,8 +72,8 @@ impl WindowState {
 
     fn new_tab(&mut self, ctx: &egui::Context, has_gpu: bool, srgb: bool, shared: &Shared) {
         let mut tab = PaintApp::new_blank(has_gpu, srgb, ctx);
-        tab.apply_shared(shared);
-        tab.invalidate_canvas();
+        tab.editor.apply_shared(shared);
+        tab.editor.invalidate_canvas();
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
     }
@@ -85,6 +86,45 @@ impl WindowState {
         if self.active > index || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
         }
+    }
+
+    fn open_pending_document(
+        &mut self,
+        ctx: &egui::Context,
+        has_gpu: bool,
+        srgb: bool,
+        shared: &Shared,
+    ) {
+        if let Some((buffer, path)) = self.tabs[self.active].take_opened_document() {
+            let reuse = self.tabs[self.active].editor.is_pristine_new_document();
+            if !reuse {
+                self.new_tab(ctx, has_gpu, srgb, shared);
+            }
+            self.tabs[self.active]
+                .editor
+                .load_buffer(buffer, Some(path));
+            ctx.request_repaint();
+        }
+    }
+
+    fn open_dropped_images(
+        &mut self,
+        ctx: &egui::Context,
+        has_gpu: bool,
+        srgb: bool,
+        shared: &Shared,
+    ) {
+        let files = ctx.input_mut(|input| std::mem::take(&mut input.raw.dropped_files));
+        if files.is_empty() {
+            return;
+        }
+        for file in files {
+            if let Some(path) = file.path.filter(|path| PaintApp::supports_image_path(path)) {
+                self.tabs[self.active].open_image_path(ctx, &path);
+                self.open_pending_document(ctx, has_gpu, srgb, shared);
+            }
+        }
+        ctx.request_repaint();
     }
 }
 
@@ -102,7 +142,7 @@ impl Workspace {
     /// Creates the workspace with a single empty tab in the main window.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let first = PaintApp::new(cc);
-        let shared = first.capture_shared();
+        let shared = first.editor.capture_shared();
         let has_gpu = first.has_gpu();
         let srgb_output = first.srgb_output();
         let main = WindowState::new(egui::ViewportId::ROOT, 0, first);
@@ -129,7 +169,7 @@ impl Workspace {
 
         // Intercept the window close when any of its tabs has unsaved changes.
         if ctx.input(|i| i.viewport().close_requested()) {
-            let modified = window.tabs.iter().any(|tab| tab.is_modified());
+            let modified = window.tabs.iter().any(|tab| tab.editor.is_modified());
             if modified && !window.force_close {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 window.confirm_close = true;
@@ -140,9 +180,9 @@ impl Workspace {
         let mut tear = None;
         match std::mem::replace(&mut window.pending, TabAction::None) {
             TabAction::Switch(index) if index < window.tabs.len() => {
-                *shared = window.tabs[window.active].capture_shared();
+                *shared = window.tabs[window.active].editor.capture_shared();
                 window.active = index;
-                window.tabs[index].invalidate_canvas();
+                window.tabs[index].editor.invalidate_canvas();
             }
             TabAction::Close(index) => window.close_tab(index),
             TabAction::New => window.new_tab(ctx, has_gpu, srgb, shared),
@@ -165,14 +205,16 @@ impl Workspace {
         }
         let active = window.active;
         window.tabs[active].set_window_id(window.render_id);
-        window.tabs[active].apply_shared(shared);
+        window.tabs[active].editor.apply_shared(shared);
         window.tabs[active].update_editor_top(ctx);
         // The tab strip sits below the menu, right of the tool box and above
         // the canvas: it is drawn between the two editor halves.
         show_tab_bar(ctx, window, drag);
         window.tabs[active].update_editor_bottom(ctx);
         show_window_close_confirm(ctx, window);
-        *shared = window.tabs[active].capture_shared();
+        *shared = window.tabs[active].editor.capture_shared();
+        window.open_pending_document(ctx, has_gpu, srgb, shared);
+        window.open_dropped_images(ctx, has_gpu, srgb, shared);
         RenderResult {
             closed: false,
             tear,
@@ -189,7 +231,7 @@ impl Workspace {
             return;
         }
         let mut tab = self.windows[source].tabs.remove(index);
-        tab.invalidate_canvas();
+        tab.editor.invalidate_canvas();
         if self.windows[source].active > index {
             self.windows[source].active -= 1;
         }
@@ -209,11 +251,12 @@ impl Workspace {
         let title = self.windows[index]
             .tabs
             .first()
-            .map(|tab| tab.tab_label())
+            .map(|tab| tab.tab_label(ctx))
             .unwrap_or_default();
         let builder = egui::ViewportBuilder::default()
             .with_title(format!("{title} - RS Paint"))
             .with_inner_size([900.0, 700.0])
+            .with_drag_and_drop(true)
             .with_min_inner_size([480.0, 320.0]);
 
         let mut window = self.windows.remove(index);
@@ -260,7 +303,7 @@ impl Workspace {
                 && index < self.windows[source].tabs.len()
             {
                 let mut tab = self.windows[source].tabs.remove(index);
-                tab.invalidate_canvas();
+                tab.editor.invalidate_canvas();
                 let src = &mut self.windows[source];
                 if src.active > index {
                     src.active -= 1;
@@ -283,7 +326,7 @@ impl Workspace {
 /// Draws a window's tab strip and records any requested action.
 fn show_tab_bar(ctx: &egui::Context, window: &mut WindowState, drag: &mut Option<Drag>) {
     let panel_id = egui::Id::new(("tab-bar", window.id));
-    let strip_fill = egui::Color32::from_gray(178);
+    let strip_fill = crate::theme::STRIP;
     egui::TopBottomPanel::top(panel_id)
         .frame(
             egui::Frame::new()
@@ -291,84 +334,98 @@ fn show_tab_bar(ctx: &egui::Context, window: &mut WindowState, drag: &mut Option
                 .inner_margin(egui::Margin {
                     left: 6,
                     right: 6,
-                    top: 4,
+                    top: 0,
                     bottom: 0,
                 }),
         )
         .show(ctx, |ui| {
-            let strip_bottom = ui.max_rect().bottom();
+            let strip_bottom = ui.cursor().top() + TAB_HEIGHT;
             let mut rects: Vec<egui::Rect> = Vec::new();
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for index in 0..window.tabs.len() {
-                    let label = window.tabs[index].tab_label();
-                    let selected = index == window.active;
-                    let (resp, close) = tab_widget(ui, &label, selected);
-                    let rect = resp.rect;
-                    rects.push(rect);
-                    if close {
-                        window.pending = TabAction::Close(index);
-                    } else if resp.clicked() {
-                        window.pending = TabAction::Switch(index);
-                    }
-                    if resp.drag_started() {
-                        *drag = Some(Drag {
-                            source: window.id,
-                            index,
-                            label: label.clone(),
-                            pos: rect.center(),
-                            left: false,
-                        });
-                    }
-                    if resp.dragged() {
-                        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-                        if let Some(d) = drag.as_mut() {
-                            if d.source == window.id {
-                                if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                                    d.pos = pos;
-                                    d.left = !ctx.viewport_rect().contains(pos);
-                                } else {
-                                    d.left = true;
-                                }
+            egui::ScrollArea::horizontal()
+                .id_salt(("tabs-scroll", window.id))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for index in 0..window.tabs.len() {
+                            let label = window.tabs[index].tab_label(ctx);
+                            let selected = index == window.active;
+                            let (resp, close) = tab_widget(ui, &label, selected);
+                            let rect = resp.rect;
+                            rects.push(rect);
+                            if close {
+                                window.pending = TabAction::Close(index);
+                            } else if resp.clicked() {
+                                window.pending = TabAction::Switch(index);
                             }
-                        }
-                    }
-                    if resp.drag_stopped() {
-                        if let Some(d) = drag.as_ref() {
-                            if d.source == window.id {
-                                // A release back inside the source window
-                                // reorders instead of tearing off.
-                                if !d.left {
-                                    if let Some(pos) = resp.interact_pointer_pos() {
-                                        if pos.y > strip_bottom + TEAR_OFF_DISTANCE {
-                                            // Dropped below the strip: detach.
-                                            window.pending = TabAction::TearOff(d.index, pos);
+                            if resp.drag_started() {
+                                *drag = Some(Drag {
+                                    source: window.id,
+                                    index,
+                                    label: label.clone(),
+                                    pos: rect.center(),
+                                    left: false,
+                                });
+                            }
+                            if resp.dragged() {
+                                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                                if let Some(d) = drag.as_mut() {
+                                    if d.source == window.id {
+                                        if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
+                                            d.pos = pos;
+                                            d.left = !ctx.viewport_rect().contains(pos);
                                         } else {
-                                            // Reorder by the position under the
-                                            // pointer (count the tab centers to
-                                            // its left).
-                                            let from = d.index;
-                                            let target = rects
-                                                .iter()
-                                                .filter(|r| r.center().x < pos.x)
-                                                .count();
-                                            let to =
-                                                if target > from { target - 1 } else { target };
-                                            if to != from {
-                                                window.pending = TabAction::Reorder(from, to);
-                                            }
+                                            d.left = true;
                                         }
                                     }
                                 }
-                                *drag = None;
+                            }
+                            if resp.drag_stopped() {
+                                if let Some(d) = drag.as_ref() {
+                                    if d.source == window.id {
+                                        // A release back inside the source window
+                                        // reorders instead of tearing off.
+                                        if !d.left {
+                                            if let Some(pos) = resp.interact_pointer_pos() {
+                                                if pos.y > strip_bottom + TEAR_OFF_DISTANCE {
+                                                    // Dropped below the strip: detach.
+                                                    window.pending =
+                                                        TabAction::TearOff(d.index, pos);
+                                                } else {
+                                                    // Reorder by the position under the
+                                                    // pointer (count the tab centers to
+                                                    // its left).
+                                                    let from = d.index;
+                                                    let target = rects
+                                                        .iter()
+                                                        .filter(|r| r.center().x < pos.x)
+                                                        .count();
+                                                    let to = if target > from {
+                                                        target - 1
+                                                    } else {
+                                                        target
+                                                    };
+                                                    if to != from {
+                                                        window.pending =
+                                                            TabAction::Reorder(from, to);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        *drag = None;
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-                if ui.button("+").on_hover_text("New tab").clicked() {
-                    window.pending = TabAction::New;
-                }
-            });
+                        if ui
+                            .button("+")
+                            .on_hover_text(crate::i18n::tr(ui.ctx(), "New tab"))
+                            .clicked()
+                        {
+                            window.pending = TabAction::New;
+                        }
+                    });
+                });
         });
 
     // Drag ghost: a floating copy of the tab following the cursor (only while
@@ -392,8 +449,8 @@ fn paint_drag_ghost(ctx: &egui::Context, label: &str) {
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_gray(210))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(90)))
+                .fill(crate::theme::PANEL)
+                .stroke(egui::Stroke::new(1.0, crate::theme::ACCENT))
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
                     ui.label(egui::RichText::new(label));
@@ -408,24 +465,37 @@ fn show_window_close_confirm(ctx: &egui::Context, window: &mut WindowState) {
     }
     let mut open = true;
     let mut action = 0u8;
-    egui::Window::new("Cerrar ventana")
+    egui::Window::new(crate::i18n::tr(ctx, "Close window"))
+        .id(egui::Id::new("dialog-close-window"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .open(&mut open)
         .show(ctx, |ui| {
             ui.set_min_width(340.0);
-            ui.label("Hay cambios sin guardar en esta ventana.");
-            ui.label("¿Seguro que quieres cerrarla?");
+            ui.label(crate::i18n::tr(
+                ui.ctx(),
+                "There are unsaved changes in this window.",
+            ));
+            ui.label(crate::i18n::tr(
+                ui.ctx(),
+                "Are you sure you want to close it?",
+            ));
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button("Cancelar").clicked() {
+                if ui.button(crate::i18n::tr(ui.ctx(), "Cancel")).clicked() {
                     action = 1;
                 }
-                if ui.button("Guardar y cerrar").clicked() {
+                if ui
+                    .button(crate::i18n::tr(ui.ctx(), "Save and close"))
+                    .clicked()
+                {
                     action = 2;
                 }
-                if ui.button("Cerrar sin guardar").clicked() {
+                if ui
+                    .button(crate::i18n::tr(ui.ctx(), "Close without saving"))
+                    .clicked()
+                {
                     action = 3;
                 }
             });
@@ -438,9 +508,9 @@ fn show_window_close_confirm(ctx: &egui::Context, window: &mut WindowState) {
         2 => {
             let mut all_saved = true;
             for tab in window.tabs.iter_mut() {
-                if tab.is_modified() {
-                    tab.save();
-                    if tab.is_modified() {
+                if tab.editor.is_modified() {
+                    tab.save(ctx);
+                    if tab.editor.is_modified() {
                         all_saved = false;
                     }
                 }
@@ -460,78 +530,8 @@ fn show_window_close_confirm(ctx: &egui::Context, window: &mut WindowState) {
     }
 }
 
-/// The height of the tab strip (and of each tab).
-const TAB_HEIGHT: f32 = 24.0;
-/// The maximum width of a tab before its label is ellipsized.
-const TAB_MAX_WIDTH: f32 = 200.0;
-/// How far below the tab strip a tab must be dragged to detach it.
-const TEAR_OFF_DISTANCE: f32 = 40.0;
-
-/// Draws one tab: a rectangle with left/top/right borders, an ellipsized
-/// label and a close button. Returns the tab's response and whether its close
-/// button was clicked.
-fn tab_widget(ui: &mut egui::Ui, label: &str, selected: bool) -> (egui::Response, bool) {
-    let font_id = egui::TextStyle::Button.resolve(ui.style());
-    let pad = 8.0;
-    let x_size = 18.0;
-    let text_max = (TAB_MAX_WIDTH - 2.0 * pad - x_size).max(24.0);
-
-    // Lay the label out on a single line, ellipsizing if it does not fit.
-    let mut job = egui::text::LayoutJob::single_section(
-        label.to_owned(),
-        egui::TextFormat {
-            font_id: font_id.clone(),
-            color: ui.visuals().text_color(),
-            ..Default::default()
-        },
-    );
-    job.wrap.max_width = text_max;
-    job.wrap.max_rows = 1;
-    job.wrap.overflow_character = Some('…');
-    let galley = ui.painter().layout_job(job);
-
-    let width = (galley.size().x + 2.0 * pad + x_size).min(TAB_MAX_WIDTH);
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(width, TAB_HEIGHT), egui::Sense::click_and_drag());
-
-    let visuals = ui.style().visuals.clone();
-    // The selected tab matches the content below so it reads as connected.
-    let fill = if selected {
-        visuals.panel_fill
-    } else {
-        egui::Color32::from_gray(178)
-    };
-    let border = egui::Color32::from_gray(120);
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, fill);
-    let stroke = egui::Stroke::new(1.0, border);
-    painter.line_segment([rect.left_bottom(), rect.left_top()], stroke);
-    painter.line_segment([rect.left_top(), rect.right_top()], stroke);
-    painter.line_segment([rect.right_top(), rect.right_bottom()], stroke);
-    let text_pos = egui::pos2(rect.left() + pad, rect.center().y - galley.size().y * 0.5);
-    painter.galley(text_pos, galley, visuals.text_color());
-
-    // Close button at the right of the label.
-    let x_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.right() - x_size * 0.5 - 1.0, rect.center().y),
-        egui::vec2(x_size, x_size),
-    );
-    let x_resp = ui.interact(x_rect, resp.id.with("close"), egui::Sense::click());
-    let x_color = if x_resp.hovered() {
-        visuals.strong_text_color()
-    } else {
-        visuals.weak_text_color()
-    };
-    ui.painter().text(
-        x_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "×",
-        font_id,
-        x_color,
-    );
-
-    (resp.on_hover_text(label.to_owned()), x_resp.clicked())
-}
+/// Distance below the strip required to detach a dragged tab.
+const TEAR_OFF_DISTANCE: f32 = 20.0;
 
 impl eframe::App for Workspace {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -570,5 +570,182 @@ impl eframe::App for Workspace {
 
         // Resolve a cross-window drag once every window has been drawn.
         self.resolve_drag();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rspaint_core::{Color, PixelBuffer};
+    use rspaint_editor::PointerButton;
+
+    struct DropFiles(std::path::PathBuf);
+
+    impl DropFiles {
+        fn new() -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let directory =
+                std::env::temp_dir().join(format!("rspaint-drop-{}-{unique}", std::process::id()));
+            std::fs::create_dir(&directory).unwrap();
+            let pixels = PixelBuffer::new(12, 8, Color::rgb(20, 80, 150));
+            std::fs::write(
+                directory.join("first.PNG"),
+                rspaint_core::io::encode(&pixels, rspaint_core::io::SaveFormat::Png).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join("second.bmp"),
+                rspaint_core::io::encode(&pixels, rspaint_core::io::SaveFormat::Bmp).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(directory.join("unsupported.txt"), b"not an image").unwrap();
+            std::fs::write(directory.join("broken.png"), b"not an image").unwrap();
+            Self(directory)
+        }
+        fn input(&self, names: &[&str]) -> egui::RawInput {
+            egui::RawInput {
+                dropped_files: names
+                    .iter()
+                    .map(|name| egui::DroppedFile {
+                        path: Some(self.0.join(name)),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+        }
+    }
+    impl Drop for DropFiles {
+        fn drop(&mut self) {
+            for name in ["first.PNG", "second.bmp", "unsupported.txt", "broken.png"] {
+                let _ = std::fs::remove_file(self.0.join(name));
+            }
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    #[test]
+    fn dropping_multiple_images_reuses_blank_then_opens_each_in_its_own_tab() {
+        let files = DropFiles::new();
+        let ctx = egui::Context::default();
+        let original = PaintApp::new_blank(true, false, &ctx);
+        let shared = original.editor.capture_shared();
+        let mut window = WindowState::new(egui::ViewportId::ROOT, 0, original);
+        let _ = ctx.run(
+            files.input(&["first.PNG", "unsupported.txt", "second.bmp"]),
+            |ctx| {
+                window.open_dropped_images(ctx, true, false, &shared);
+                // Another layout pass cannot reopen consumed files.
+                window.open_dropped_images(ctx, true, false, &shared);
+            },
+        );
+        assert_eq!(window.tabs.len(), 2);
+        assert_eq!(window.active, 1);
+        assert_eq!(window.tabs[0].editor.document.name, "first");
+        assert_eq!(window.tabs[1].editor.document.name, "second");
+        for tab in &window.tabs {
+            assert_eq!(
+                tab.editor.document.buffer.get(0, 0),
+                Some(Color::rgb(20, 80, 150))
+            );
+            assert!(!tab.editor.is_modified());
+        }
+    }
+
+    #[test]
+    fn dropped_image_preserves_edited_document_and_corrupt_file_creates_no_tab() {
+        let files = DropFiles::new();
+        let ctx = egui::Context::default();
+        let mut original = PaintApp::new_blank(true, false, &ctx);
+        original.editor.begin_stroke((3, 3), PointerButton::Primary);
+        original.editor.end_stroke(false);
+        let pixels = original.editor.document.buffer.clone();
+        let shared = original.editor.capture_shared();
+        let mut window =
+            WindowState::new(egui::ViewportId::from_hash_of("detached-test"), 1, original);
+        let _ = ctx.run(files.input(&["first.PNG", "broken.png"]), |ctx| {
+            window.open_dropped_images(ctx, true, false, &shared);
+        });
+        assert_eq!(window.tabs.len(), 2);
+        assert_eq!(window.tabs[0].editor.document.buffer, pixels);
+        assert!(window.tabs[0].editor.is_modified());
+        assert_eq!(window.tabs[1].editor.document.name, "first");
+        assert!(window.tabs[1].error_message.is_some());
+    }
+
+    #[test]
+    fn first_open_reuses_the_untouched_blank_document() {
+        let ctx = egui::Context::default();
+        let original = PaintApp::new_blank(true, false, &ctx);
+        let shared = original.editor.capture_shared();
+        let mut window = WindowState::new(egui::ViewportId::ROOT, 0, original);
+        let opened = PixelBuffer::new(12, 8, Color::WHITE);
+        window.tabs[0].request_open_document(opened.clone(), "first.png".into());
+        window.open_pending_document(&ctx, true, false, &shared);
+        assert_eq!(window.tabs.len(), 1);
+        assert_eq!(window.active, 0);
+        assert_eq!(window.tabs[0].editor.document.buffer, opened);
+        assert_eq!(window.tabs[0].editor.document.name, "first");
+        window.tabs[0]
+            .request_open_document(PixelBuffer::new(4, 4, Color::BLACK), "second.png".into());
+        window.open_pending_document(&ctx, true, false, &shared);
+        assert_eq!(window.tabs.len(), 2);
+        assert_eq!(window.active, 1);
+        assert_eq!(window.tabs[0].editor.document.buffer, opened);
+    }
+
+    #[test]
+    fn undoing_back_to_white_does_not_make_the_startup_tab_disposable() {
+        let ctx = egui::Context::default();
+        let mut original = PaintApp::new_blank(true, false, &ctx);
+        original.editor.begin_stroke((3, 3), PointerButton::Primary);
+        original.editor.end_stroke(false);
+        original.editor.undo();
+        assert_eq!(
+            original.editor.document.buffer.get(3, 3),
+            Some(Color::WHITE)
+        );
+        let shared = original.editor.capture_shared();
+        let mut window = WindowState::new(egui::ViewportId::ROOT, 0, original);
+        window.tabs[0]
+            .request_open_document(PixelBuffer::new(4, 4, Color::BLACK), "opened.png".into());
+        window.open_pending_document(&ctx, true, false, &shared);
+        assert_eq!(window.tabs.len(), 2);
+        assert!(window.tabs[0].editor.history.can_redo());
+    }
+
+    #[test]
+    fn opening_an_image_adds_a_tab_and_preserves_the_unsaved_document() {
+        let ctx = egui::Context::default();
+        let mut original = PaintApp::new_blank(true, false, &ctx);
+        original.editor.begin_stroke((3, 3), PointerButton::Primary);
+        original.editor.end_stroke(false);
+        original.editor.select_all();
+        let pixels = original.editor.document.buffer.clone();
+        let history = original.editor.history.current();
+        let shared = original.editor.capture_shared();
+        let mut window = WindowState::new(egui::ViewportId::ROOT, 0, original);
+        let opened = PixelBuffer::new(12, 8, Color::rgb(20, 80, 150));
+        window.tabs[0].request_open_document(opened.clone(), "landscape.png".into());
+        window.open_pending_document(&ctx, true, false, &shared);
+        assert_eq!(window.tabs.len(), 2);
+        assert_eq!(window.active, 1);
+        assert_eq!(window.tabs[0].editor.document.buffer, pixels);
+        assert_eq!(window.tabs[0].editor.history.current(), history);
+        assert!(window.tabs[0].editor.is_modified());
+        assert!(window.tabs[0].editor.selection.is_some());
+        assert_eq!(window.tabs[1].editor.document.buffer, opened);
+        assert_eq!(window.tabs[1].editor.document.name, "landscape");
+        assert_eq!(
+            window.tabs[1].editor.file_path.as_deref(),
+            Some(std::path::Path::new("landscape.png"))
+        );
+        assert!(!window.tabs[1].editor.is_modified());
+        // A request is handled only once, without adding extra tabs next frame.
+        window.open_pending_document(&ctx, true, false, &shared);
+        assert_eq!(window.tabs.len(), 2);
     }
 }

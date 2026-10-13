@@ -22,8 +22,8 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
             color_indicator(ui, app);
             ui.separator();
 
-            let palette = app.palette.clone();
-            let custom = app.custom_colors.clone();
+            let palette = app.editor.settings.palette.clone();
+            let custom = app.editor.settings.custom_colors.clone();
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SWATCH_GAP, SWATCH_GAP);
                 for (row_index, row) in palette.chunks(14).enumerate() {
@@ -33,15 +33,16 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
             });
             ui.separator();
             ui.vertical(|ui| {
-                if ui.button("Reset").clicked() {
-                    app.reset_colors();
+                if ui.button(crate::i18n::tr(ui.ctx(), "Reset")).clicked() {
+                    app.editor.reset_colors();
                 }
-                if ui.button("Capture").clicked() {
-                    app.capture_colors();
+                if ui.button(crate::i18n::tr(ui.ctx(), "Capture")).clicked() {
+                    app.editor.capture_colors();
                 }
                 ui.horizontal(|ui| {
-                    ui.label("Opacity");
-                    let mut percent = (f32::from(app.foreground.a) / 255.0 * 100.0).round();
+                    ui.label(crate::i18n::tr(ui.ctx(), "Opacity"));
+                    let mut percent =
+                        (f32::from(app.editor.settings.foreground.a) / 255.0 * 100.0).round();
                     if ui
                         .add(
                             egui::DragValue::new(&mut percent)
@@ -50,9 +51,9 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                         )
                         .changed()
                     {
-                        app.foreground.a =
+                        app.editor.settings.foreground.a =
                             (percent / 100.0 * 255.0).round().clamp(0.0, 255.0) as u8;
-                        app.note_transparency(app.foreground);
+                        app.editor.note_transparency(app.editor.settings.foreground);
                     }
                 });
             });
@@ -92,12 +93,12 @@ fn swatch_row(ui: &mut egui::Ui, colors: &[Color], kind: RowKind, app: &mut Pain
 
             // Right-click sets the secondary color (no picker).
             if response.secondary_clicked() {
-                app.background = color;
+                app.editor.settings.background = color;
             }
             // A quick left-click just picks the primary color (not after a
             // long-press, which only edits the swatch).
             if response.clicked() && !app.swatch_hold_fired {
-                app.foreground = color;
+                app.editor.settings.foreground = color;
             }
             // ...but holding the swatch opens the advanced picker for that slot.
             if response.is_pointer_button_down_on()
@@ -144,23 +145,23 @@ fn color_indicator(ui: &mut egui::Ui, app: &mut PaintApp) {
     let back_rect =
         egui::Rect::from_min_size(rect.min + egui::vec2(14.0, 14.0), egui::vec2(28.0, 28.0));
     let front_rect = egui::Rect::from_min_size(rect.min, egui::vec2(28.0, 28.0));
-    painter.rect_filled(back_rect, 0.0, to_color32(app.background));
+    painter.rect_filled(back_rect, 0.0, to_color32(app.editor.settings.background));
     painter.rect_stroke(back_rect, 0.0, stroke, egui::StrokeKind::Inside);
-    painter.rect_filled(front_rect, 0.0, to_color32(app.foreground));
+    painter.rect_filled(front_rect, 0.0, to_color32(app.editor.settings.foreground));
     painter.rect_stroke(front_rect, 0.0, stroke, egui::StrokeKind::Inside);
 
     // Right-click swaps the primary and secondary colors.
     if response.secondary_clicked() {
-        app.swap_colors();
+        app.editor.swap_colors();
     }
     // Left-click opens the picker for the clicked square (fast, no hold needed).
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             let front = egui::Rect::from_min_size(rect.min, egui::vec2(28.0, 28.0));
             let (target, color) = if front.contains(pos) {
-                (ColorTarget::Foreground, app.foreground)
+                (ColorTarget::Foreground, app.editor.settings.foreground)
             } else {
-                (ColorTarget::Background, app.background)
+                (ColorTarget::Background, app.editor.settings.background)
             };
             let anchor = response.rect.left_top() - egui::vec2(0.0, PICKER_GAP);
             app.open_color_picker(target, color, anchor);

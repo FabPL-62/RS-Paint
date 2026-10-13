@@ -55,6 +55,7 @@ mod clip_tests {
     use rspaint_core::color::Color;
 
     #[test]
+    #[ignore = "requires an interactive system clipboard and overwrites its contents"]
     fn clipboard_round_trip() {
         let mut b = PixelBuffer::transparent(4, 3);
         b.set(0, 0, Color::rgb(255, 0, 0));

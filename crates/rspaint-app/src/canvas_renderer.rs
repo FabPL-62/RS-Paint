@@ -188,14 +188,28 @@ pub struct Uniforms {
     pub params: [f32; 4],
 }
 
-/// A pending region of the document to upload to the GPU texture.
-#[derive(Clone, Debug)]
-pub struct Upload {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-    pub data: Vec<u8>,
+pub use rspaint_editor::Upload;
+
+/// Survives discarded egui layout passes until a GPU callback consumes it.
+#[derive(Clone, Default)]
+pub struct PendingUpload(std::sync::Arc<std::sync::Mutex<Option<Upload>>>);
+
+impl PendingUpload {
+    pub fn stage(&self, editor: &mut rspaint_editor::Editor) {
+        let mut pending = self.0.lock().expect("canvas upload lock");
+        if pending.is_some() {
+            // An unrendered update may cover a different region or document size.
+            // Replace it with the latest full snapshot rather than losing pixels.
+            editor.invalidate_canvas();
+        }
+        if let Some(upload) = editor.take_pending_upload() {
+            *pending = Some(upload);
+        }
+    }
+
+    fn take(&self) -> Option<Upload> {
+        self.0.lock().expect("canvas upload lock").take()
+    }
 }
 
 /// GPU resources for the canvas, stored in egui-wgpu's callback resources.
@@ -389,7 +403,7 @@ pub struct CanvasCallback {
     /// Which window this canvas belongs to (its own texture/uniforms).
     pub window_id: u64,
     pub uniforms: Uniforms,
-    pub upload: Option<Upload>,
+    pub upload: PendingUpload,
 }
 
 impl CallbackTrait for CanvasCallback {
@@ -420,7 +434,7 @@ impl CallbackTrait for CanvasCallback {
         ];
         window.ensure_texture(device, bind_group_layout, sampler, size);
 
-        if let Some(upload) = &self.upload {
+        if let Some(upload) = self.upload.take() {
             if let Some(texture) = window.texture.as_ref() {
                 queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
@@ -474,5 +488,49 @@ impl CallbackTrait for CanvasCallback {
         render_pass.set_pipeline(&renderer.pipeline);
         render_pass.set_bind_group(0, bind_group, &[]);
         render_pass.draw(0..6, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rspaint_core::{Color, PixelBuffer};
+    use rspaint_editor::{Editor, PointerButton};
+
+    #[test]
+    fn discarded_layout_pass_preserves_initial_white_upload() {
+        let mut editor = Editor::new();
+        let pending = PendingUpload::default();
+        pending.stage(&mut editor);
+        let discarded_callback = pending.clone();
+        drop(discarded_callback);
+        pending.stage(&mut editor);
+        let upload = pending.take().expect("initial image still needs uploading");
+        assert_eq!(
+            [upload.width, upload.height],
+            [editor.document.width(), editor.document.height()]
+        );
+        assert!(upload
+            .data
+            .chunks_exact(4)
+            .all(|pixel| pixel == [255, 255, 255, 255]));
+        assert!(pending.take().is_none());
+    }
+
+    #[test]
+    fn updates_before_render_replace_pending_snapshot_without_losing_regions() {
+        let mut editor = Editor::new();
+        editor.load_buffer(PixelBuffer::new(16, 16, Color::WHITE), None);
+        let pending = PendingUpload::default();
+        pending.stage(&mut editor);
+        editor.begin_stroke((8, 8), PointerButton::Primary);
+        editor.end_stroke(false);
+        pending.stage(&mut editor);
+        let upload = pending.take().unwrap();
+        assert_eq!([upload.width, upload.height], [16, 16]);
+        assert_eq!(upload.data, editor.document.buffer.data());
+        // After the backend consumes the snapshot, unchanged frames send nothing.
+        pending.stage(&mut editor);
+        assert!(pending.take().is_none());
     }
 }

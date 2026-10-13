@@ -90,7 +90,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                 );
 
                 ui.horizontal(|ui| {
-                    ui.label("Opacity");
+                    ui.label(crate::i18n::tr(ui.ctx(), "Opacity"));
                     ui.add(egui::Slider::new(&mut alpha, 0.0..=1.0).show_value(false));
                     ui.label(format!("{}%", (alpha * 100.0).round() as i32));
                 });
@@ -107,16 +107,16 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                     );
                     ui.label(format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b));
                     ui.label(format!("RGB {} {} {}", color.r, color.g, color.b));
-                    if ui.button("Cerrar").clicked() {
+                    if ui.button(crate::i18n::tr(ui.ctx(), "Close")).clicked() {
                         open = false;
                     }
                 });
                 ui.label(match target {
-                    ColorTarget::Foreground => "Color primario",
-                    ColorTarget::Background => "Color secundario",
-                    ColorTarget::Palette(_) => "Color de la paleta",
-                    ColorTarget::Custom(_) => "Color reciente",
-                    ColorTarget::Outliner => "Color de esquina",
+                    ColorTarget::Foreground => crate::i18n::tr(ui.ctx(), "Primary color"),
+                    ColorTarget::Background => crate::i18n::tr(ui.ctx(), "Secondary color"),
+                    ColorTarget::Palette(_) => crate::i18n::tr(ui.ctx(), "Palette color"),
+                    ColorTarget::Custom(_) => crate::i18n::tr(ui.ctx(), "Recent color"),
+                    ColorTarget::Outliner => crate::i18n::tr(ui.ctx(), "Corner color"),
                 });
             });
         });

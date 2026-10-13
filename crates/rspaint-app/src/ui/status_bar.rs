@@ -8,7 +8,7 @@ use crate::app::PaintApp;
 pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
     egui::TopBottomPanel::bottom("status-bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
-            let coords = match app.pointer {
+            let coords = match app.editor.pointer {
                 Some((x, y)) => format!("{x}, {y}"),
                 None => String::new(),
             };
@@ -16,11 +16,11 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
             ui.separator();
             ui.label(format!(
                 "{} x {}",
-                app.document.width(),
-                app.document.height()
+                app.editor.document.width(),
+                app.editor.document.height()
             ));
             ui.separator();
-            ui.label(format!("{}%", (app.magnification * 100.0).round()));
+            ui.label(format!("{}%", (app.editor.magnification * 100.0).round()));
         });
     });
 }

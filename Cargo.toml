@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/rspaint-core",
     "crates/rspaint-app",
+    "crates/rspaint-editor",
 ]
 
 [workspace.package]
@@ -14,6 +15,7 @@ authors = ["RS Paint contributors"]
 
 [workspace.dependencies]
 rspaint-core = { path = "crates/rspaint-core" }
+rspaint-editor = { path = "crates/rspaint-editor" }
 
 [profile.release]
 lto = "thin"

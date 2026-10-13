@@ -1,0 +1,11 @@
+[package]
+name = "rspaint-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rspaint-core.workspace = true
+emath = "0.33.3"
+ab_glyph = "0.2.32"
+epaint_default_fonts = "0.33.3"
