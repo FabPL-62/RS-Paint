@@ -31,7 +31,7 @@ impl Editor {
             return;
         };
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };
@@ -122,7 +122,7 @@ impl Editor {
         let runs = runs_from_mask(&new_mask, new_width, new_height);
 
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };
@@ -221,7 +221,7 @@ impl Editor {
             .is_some_and(|selection| selection.rotation_origin.is_none())
         {
             let background = if self.settings.selection_transparent {
-                Some(self.settings.background)
+                Some(self.colors.background)
             } else {
                 None
             };
@@ -317,7 +317,7 @@ impl Editor {
         };
         let runs = runs_from_mask(&new_mask, width, height);
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };
@@ -372,7 +372,7 @@ impl Editor {
         let fill = self.selection_fill();
         self.note_transparency(fill);
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };

@@ -115,7 +115,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                     ColorTarget::Foreground => crate::i18n::tr(ui.ctx(), "Primary color"),
                     ColorTarget::Background => crate::i18n::tr(ui.ctx(), "Secondary color"),
                     ColorTarget::Palette(_) => crate::i18n::tr(ui.ctx(), "Palette color"),
-                    ColorTarget::Custom(_) => crate::i18n::tr(ui.ctx(), "Recent color"),
+                    ColorTarget::Captured(_) => crate::i18n::tr(ui.ctx(), "Captured color"),
                     ColorTarget::Outliner => crate::i18n::tr(ui.ctx(), "Corner color"),
                 });
             });

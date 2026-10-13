@@ -37,6 +37,7 @@ impl Editor {
 
     pub fn reset_document(&mut self) {
         self.document = Document::default();
+        self.colors = DocumentColors::default();
         self.history = History::new(self.document.buffer.clone(), "New");
         self.clear_interaction();
         self.file_path = None;
@@ -95,6 +96,8 @@ impl Editor {
 
     pub fn load_buffer(&mut self, buffer: PixelBuffer, path: Option<std::path::PathBuf>) {
         let transparent = buffer.data().chunks_exact(4).any(|pixel| pixel[3] < 255);
+        self.colors = DocumentColors::default();
+        self.colors.background = buffer.get(0, 0).unwrap_or(Color::WHITE);
         self.document.buffer = buffer;
         self.document.transparent = transparent;
         self.document.modified = false;
@@ -110,8 +113,8 @@ impl Editor {
     }
 
     pub fn replace_primary_with_secondary(&mut self) {
-        let from = self.settings.foreground;
-        let to = self.settings.background;
+        let from = self.colors.foreground;
+        let to = self.colors.background;
         if from == to {
             return;
         }
@@ -176,8 +179,8 @@ impl Editor {
             return;
         }
 
-        let bg = self.settings.background;
-        let fg = self.settings.foreground;
+        let bg = self.colors.background;
+        let fg = self.colors.foreground;
         let extra = self.settings.outliner_color;
         let size = self.settings.outliner_size.max(1) as i32;
         let concave = self.settings.outliner_concave;
@@ -369,7 +372,7 @@ impl Editor {
             self.selection_pivot,
         ));
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };
@@ -509,7 +512,7 @@ impl Editor {
         let fill = if transparent {
             Color::TRANSPARENT
         } else {
-            self.settings.background
+            self.colors.background
         };
         if width != self.document.width() || height != self.document.height() {
             self.document.buffer = self.document.buffer.resized(width, height, fill);
@@ -557,7 +560,7 @@ impl Editor {
         let fill = if self.document.transparent {
             Color::TRANSPARENT
         } else {
-            self.settings.background
+            self.colors.background
         };
         let stretched = stretch_x != 100.0 || stretch_y != 100.0;
         let skewed = skew_h != 0.0 || skew_v != 0.0;

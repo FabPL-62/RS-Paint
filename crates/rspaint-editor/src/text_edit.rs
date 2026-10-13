@@ -135,7 +135,7 @@ impl Editor {
                     text_box.x + text_box.width - 1,
                     text_box.y + text_box.height - 1,
                 ),
-                self.settings.background,
+                self.colors.background,
                 BlendMode::Replace,
             );
         }
@@ -158,7 +158,7 @@ impl Editor {
                 text_box.height,
                 text,
                 style,
-                self.settings.foreground,
+                self.colors.foreground,
             );
             let rotated = crate::text::rotate_90_cw(&temp);
             crate::text::composite(&mut self.document.buffer, &rotated, text_box.x, text_box.y);
@@ -171,7 +171,7 @@ impl Editor {
                 text_box.width,
                 text,
                 style,
-                self.settings.foreground,
+                self.colors.foreground,
             );
             crate::text::composite(&mut self.document.buffer, &temp, text_box.x, text_box.y);
         }
@@ -190,7 +190,7 @@ impl Editor {
         }
         if !text.trim().is_empty() {
             self.draw_text_box(text_box, &text);
-            self.note_used_color(self.settings.foreground);
+            self.note_used_color(self.colors.foreground);
             self.mark_full();
             self.commit("Text");
         } else {

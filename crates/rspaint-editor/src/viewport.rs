@@ -118,7 +118,7 @@ impl Editor {
             0
         };
 
-        let fill = self.settings.background;
+        let fill = self.colors.background;
         self.document.buffer = drag
             .orig_buffer
             .resized_with_offset(new_width, new_height, offset_x, offset_y, fill);

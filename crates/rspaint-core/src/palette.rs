@@ -2,6 +2,30 @@
 
 use crate::color::Color;
 
+/// All distinct visible RGBA colors, with grays together and chromatic hues
+/// ascending. Saturation, brightness and alpha break ties within each hue.
+pub fn colors_by_hue(buffer: &crate::buffer::PixelBuffer) -> Vec<Color> {
+    let mut seen = std::collections::HashSet::new();
+    let mut colors = Vec::new();
+    for pixel in buffer.data().chunks_exact(4) {
+        let color = Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]);
+        if color.a != 0 && seen.insert(color) {
+            colors.push(color);
+        }
+    }
+    colors.sort_by_cached_key(|color| {
+        let (hue, saturation, value) = color.to_hsv();
+        (
+            u8::from(saturation > 0.0),
+            hue.to_bits(),
+            saturation.to_bits(),
+            value.to_bits(),
+            color.a,
+        )
+    });
+    colors
+}
+
 /// The default 28-color palette, in two rows of 14.
 pub const DEFAULT_PALETTE: [&str; 28] = [
     "000000", "808080", "800000", "808000", "008000", "008080", "000080", "800080", "808040",
@@ -55,6 +79,35 @@ pub fn default_custom_colors() -> Vec<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_includes_standard_colors_removes_duplicates_and_orders_hues() {
+        let mut buffer = crate::buffer::PixelBuffer::transparent(8, 1);
+        let input = [
+            Color::rgb(0, 0, 255),
+            Color::WHITE,
+            Color::rgb(255, 0, 0),
+            Color::BLACK,
+            Color::rgb(0, 255, 0),
+            Color::rgb(255, 0, 0),
+            Color::rgba(255, 0, 0, 128),
+            Color::TRANSPARENT,
+        ];
+        for (x, color) in input.into_iter().enumerate() {
+            buffer.set(x as u32, 0, color);
+        }
+        assert_eq!(
+            colors_by_hue(&buffer),
+            vec![
+                Color::BLACK,
+                Color::WHITE,
+                Color::rgba(255, 0, 0, 128),
+                Color::rgb(255, 0, 0),
+                Color::rgb(0, 255, 0),
+                Color::rgb(0, 0, 255)
+            ]
+        );
+    }
 
     #[test]
     fn default_palette_has_expected_size_and_first_entry() {

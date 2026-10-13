@@ -56,8 +56,8 @@ impl Editor {
             return;
         }
         if self.polygon_points.is_empty() {
-            self.polygon_stroke = self.settings.foreground;
-            self.polygon_fill = self.settings.background;
+            self.polygon_stroke = self.colors.foreground;
+            self.polygon_fill = self.colors.background;
         }
         self.polygon_points.push(p);
     }
@@ -139,7 +139,7 @@ impl Editor {
         if self.curve_points.len() >= 4 {
             self.curve_base = None;
             self.curve_points.clear();
-            self.note_used_color(self.settings.foreground);
+            self.note_used_color(self.colors.foreground);
             self.commit("Curve");
         }
     }
@@ -166,7 +166,7 @@ impl Editor {
             .copy_region_from(base, 0, 0, width, height);
         let brush = Brush::new(BrushShape::Square, self.settings.stroke_size)
             .with_blend(self.settings.paint_blend);
-        let color = self.settings.foreground;
+        let color = self.colors.foreground;
         let points = self.curve_points.clone();
         let buffer = &mut self.document.buffer;
         match points.as_slice() {
@@ -229,20 +229,20 @@ impl Editor {
 
     pub(super) fn active_color(&self, button: PointerButton) -> Color {
         match button {
-            PointerButton::Secondary => self.settings.background,
-            _ => self.settings.foreground,
+            PointerButton::Secondary => self.colors.background,
+            _ => self.colors.foreground,
         }
     }
 
     pub(super) fn canvas_clear_color(&self) -> Color {
         // Clear Image fills with the secondary color (its alpha is honored).
-        self.settings.background
+        self.colors.background
     }
 
     pub(super) fn eraser_color(&self) -> Color {
         // The eraser paints the secondary color, so its alpha (opaque, partial
         // or fully transparent) is always honored.
-        self.settings.background
+        self.colors.background
     }
 
     pub fn begin_stroke(&mut self, p: (i32, i32), button: PointerButton) {
@@ -250,9 +250,9 @@ impl Editor {
         self.note_used_color(color);
         // The fill color is the opposite of the stroke color (right-drag swaps).
         let fill_color = if button == PointerButton::Secondary {
-            self.settings.foreground
+            self.colors.foreground
         } else {
-            self.settings.background
+            self.colors.background
         };
         let tool = self.settings.tool;
         if tool.is_shape() {
@@ -433,8 +433,8 @@ impl Editor {
                 {
                     // Color Eraser replaces the foreground color with the
                     // background color (even in transparent mode).
-                    let erase_to = self.settings.background;
-                    let erase_from = self.settings.foreground;
+                    let erase_to = self.colors.background;
+                    let erase_from = self.colors.foreground;
                     erase_line(
                         &mut self.document.buffer,
                         from,
@@ -576,9 +576,9 @@ impl Editor {
                 if p.0 >= 0 && p.1 >= 0 {
                     if let Some(color) = self.document.buffer.get(p.0 as u32, p.1 as u32) {
                         if button == PointerButton::Secondary {
-                            self.settings.background = color;
+                            self.colors.background = color;
                         } else {
-                            self.settings.foreground = color;
+                            self.colors.foreground = color;
                         }
                     }
                 }
@@ -629,7 +629,7 @@ impl Editor {
 
     pub(super) fn restamp_selection(&mut self) {
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };

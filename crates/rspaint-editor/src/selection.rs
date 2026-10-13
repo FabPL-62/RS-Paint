@@ -102,7 +102,7 @@ impl Editor {
                         if let Some(base) = result.base.clone() {
                             self.document.buffer = base;
                             let background = if self.settings.selection_transparent {
-                                Some(self.settings.background)
+                                Some(self.colors.background)
                             } else {
                                 None
                             };
@@ -151,7 +151,7 @@ impl Editor {
                     if let Some(base) = union.base.clone() {
                         self.document.buffer = base;
                         let background = if self.settings.selection_transparent {
-                            Some(self.settings.background)
+                            Some(self.colors.background)
                         } else {
                             None
                         };
@@ -306,7 +306,7 @@ impl Editor {
     pub(super) fn selection_fill(&self) -> Color {
         // The area a selection is cut/moved from is filled with the secondary
         // color, so its alpha (opaque, partial or fully transparent) is honored.
-        self.settings.background
+        self.colors.background
     }
 
     pub fn begin_selection_drag(&mut self, p: (i32, i32), tool: Tool, add: bool, subtract: bool) {
@@ -387,7 +387,7 @@ impl Editor {
     pub(super) fn start_moving_selection(&mut self, p: (i32, i32)) {
         let fill = self.selection_fill();
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };
@@ -413,7 +413,7 @@ impl Editor {
 
     pub(super) fn move_selection_to(&mut self, new_x: i32, new_y: i32) {
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };
@@ -490,7 +490,7 @@ impl Editor {
                     );
                     if self.settings.tool == Tool::ContourSelect {
                         // Select the pixels that differ from the secondary color.
-                        let background = self.settings.background;
+                        let background = self.colors.background;
                         let mut mask_bits = vec![false; (width * height) as usize];
                         let mut content = PixelBuffer::transparent(width, height);
                         for ly in 0..height {
@@ -680,7 +680,7 @@ impl Editor {
         let x = (px - width as i32 / 2).clamp(0, max_x);
         let y = (py - height as i32 / 2).clamp(0, max_y);
         let background = if self.settings.selection_transparent {
-            Some(self.settings.background)
+            Some(self.colors.background)
         } else {
             None
         };

@@ -14,64 +14,113 @@ const PICKER_GAP: f32 = 8.0;
 /// How long a swatch must be held for the picker to open.
 const HOLD_SECONDS: f64 = 0.4;
 
-/// Draws the current-color indicator and the palette swatches.
+const COLUMNS: usize = 14;
+const VISIBLE_ROWS: usize = 2;
+
+/// Traditional and captured palettes belong to this document only.
 pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
     egui::TopBottomPanel::bottom("colorbox").show(ctx, |ui| {
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            color_indicator(ui, app);
-            ui.separator();
-
-            let palette = app.editor.settings.palette.clone();
-            let custom = app.editor.settings.custom_colors.clone();
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SWATCH_GAP, SWATCH_GAP);
-                for (row_index, row) in palette.chunks(14).enumerate() {
-                    swatch_row(ui, row, RowKind::Palette(row_index * 14), app);
-                }
-                swatch_row(ui, &custom, RowKind::Custom, app);
-            });
-            ui.separator();
-            ui.vertical(|ui| {
-                if ui.button(crate::i18n::tr(ui.ctx(), "Reset")).clicked() {
-                    app.editor.reset_colors();
-                }
-                if ui.button(crate::i18n::tr(ui.ctx(), "Capture")).clicked() {
-                    app.editor.capture_colors();
-                }
-                ui.horizontal(|ui| {
-                    ui.label(crate::i18n::tr(ui.ctx(), "Opacity"));
-                    let mut percent =
-                        (f32::from(app.editor.settings.foreground.a) / 255.0 * 100.0).round();
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut percent)
-                                .range(0.0..=100.0)
-                                .suffix("%"),
-                        )
-                        .changed()
-                    {
-                        app.editor.settings.foreground.a =
-                            (percent / 100.0 * 255.0).round().clamp(0.0, 255.0) as u8;
-                        app.editor.note_transparency(app.editor.settings.foreground);
-                    }
+        egui::ScrollArea::horizontal()
+            .id_salt("colorbox-scroll")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    color_indicator(ui, app);
+                    ui.add_space(8.0);
+                    let palette = app.editor.colors.palette.clone();
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = SWATCH_GAP;
+                        for (row_index, row) in
+                            palette.chunks(COLUMNS).take(VISIBLE_ROWS).enumerate()
+                        {
+                            swatch_row(ui, row, RowKind::Palette(row_index * COLUMNS), app);
+                        }
+                        ui.add_space(8.0);
+                        if ui.button(crate::i18n::tr(ui.ctx(), "Reset")).clicked() {
+                            app.editor.reset_colors();
+                        }
+                    });
+                    ui.add_space(12.0);
+                    captured_palette(app, ui);
                 });
             });
-        });
         ui.add_space(2.0);
     });
-    // Reset the long-press latch only after processing, so the release that
-    // ends a long-press doesn't count as a quick click.
     if !ctx.input(|i| i.pointer.primary_down()) {
         app.swatch_hold_fired = false;
     }
+}
+
+fn captured_palette(app: &mut PaintApp, ui: &mut egui::Ui) {
+    let max_row = app
+        .editor
+        .colors
+        .captured
+        .len()
+        .div_ceil(COLUMNS)
+        .saturating_sub(VISIBLE_ROWS);
+    app.captured_palette_row = app.captured_palette_row.min(max_row);
+    let start = app.captured_palette_row * COLUMNS;
+    let visible: Vec<_> = (start..start + COLUMNS * VISIBLE_ROWS)
+        .map(|index| {
+            app.editor
+                .colors
+                .captured
+                .get(index)
+                .copied()
+                .unwrap_or(Color::BLACK)
+        })
+        .collect();
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = SWATCH_GAP;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = SWATCH_GAP;
+                for (row, colors) in visible.chunks(COLUMNS).enumerate() {
+                    swatch_row(ui, colors, RowKind::Captured(start + row * COLUMNS), app);
+                }
+            });
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = SWATCH_GAP;
+                ui.spacing_mut().button_padding = egui::vec2(1.0, 0.0);
+                let button_size = egui::vec2(SWATCH, SWATCH);
+                if ui
+                    .add_enabled(
+                        app.captured_palette_row > 0,
+                        egui::Button::new("▲").min_size(button_size),
+                    )
+                    .on_hover_text(crate::i18n::tr(ui.ctx(), "Previous palette row"))
+                    .clicked()
+                {
+                    app.captured_palette_row -= 1;
+                }
+                if ui
+                    .add_enabled(
+                        app.captured_palette_row < max_row,
+                        egui::Button::new("▼").min_size(button_size),
+                    )
+                    .on_hover_text(crate::i18n::tr(ui.ctx(), "Next palette row"))
+                    .clicked()
+                {
+                    app.captured_palette_row += 1;
+                }
+            });
+        });
+        ui.add_space(8.0);
+        if ui.button(crate::i18n::tr(ui.ctx(), "Capture")).clicked() {
+            app.editor.capture_colors();
+            app.captured_palette_row = 0;
+        }
+    });
 }
 
 /// Which palette section a swatch row belongs to.
 #[derive(Clone, Copy)]
 enum RowKind {
     Palette(usize),
-    Custom,
+    Captured(usize),
 }
 
 impl RowKind {
@@ -79,7 +128,7 @@ impl RowKind {
     fn target(self, index: usize) -> ColorTarget {
         match self {
             RowKind::Palette(base) => ColorTarget::Palette(base + index),
-            RowKind::Custom => ColorTarget::Custom(index),
+            RowKind::Captured(base) => ColorTarget::Captured(base + index),
         }
     }
 }
@@ -93,12 +142,12 @@ fn swatch_row(ui: &mut egui::Ui, colors: &[Color], kind: RowKind, app: &mut Pain
 
             // Right-click sets the secondary color (no picker).
             if response.secondary_clicked() {
-                app.editor.settings.background = color;
+                app.editor.colors.background = color;
             }
             // A quick left-click just picks the primary color (not after a
             // long-press, which only edits the swatch).
             if response.clicked() && !app.swatch_hold_fired {
-                app.editor.settings.foreground = color;
+                app.editor.colors.foreground = color;
             }
             // ...but holding the swatch opens the advanced picker for that slot.
             if response.is_pointer_button_down_on()
@@ -145,9 +194,9 @@ fn color_indicator(ui: &mut egui::Ui, app: &mut PaintApp) {
     let back_rect =
         egui::Rect::from_min_size(rect.min + egui::vec2(14.0, 14.0), egui::vec2(28.0, 28.0));
     let front_rect = egui::Rect::from_min_size(rect.min, egui::vec2(28.0, 28.0));
-    painter.rect_filled(back_rect, 0.0, to_color32(app.editor.settings.background));
+    painter.rect_filled(back_rect, 0.0, to_color32(app.editor.colors.background));
     painter.rect_stroke(back_rect, 0.0, stroke, egui::StrokeKind::Inside);
-    painter.rect_filled(front_rect, 0.0, to_color32(app.editor.settings.foreground));
+    painter.rect_filled(front_rect, 0.0, to_color32(app.editor.colors.foreground));
     painter.rect_stroke(front_rect, 0.0, stroke, egui::StrokeKind::Inside);
 
     // Right-click swaps the primary and secondary colors.
@@ -159,12 +208,121 @@ fn color_indicator(ui: &mut egui::Ui, app: &mut PaintApp) {
         if let Some(pos) = response.interact_pointer_pos() {
             let front = egui::Rect::from_min_size(rect.min, egui::vec2(28.0, 28.0));
             let (target, color) = if front.contains(pos) {
-                (ColorTarget::Foreground, app.editor.settings.foreground)
+                (ColorTarget::Foreground, app.editor.colors.foreground)
             } else {
-                (ColorTarget::Background, app.editor.settings.background)
+                (ColorTarget::Background, app.editor.colors.background)
             };
             let anchor = response.rect.left_top() - egui::vec2(0.0, PICKER_GAP);
             app.open_color_picker(target, color, anchor);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(
+        ctx: &egui::Context,
+        app: &mut PaintApp,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1024.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| show(app, ctx),
+        )
+    }
+
+    fn swatches(output: &egui::FullOutput) -> Vec<egui::Rect> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.size() == egui::vec2(SWATCH, SWATCH)
+                        && rect.corner_radius == egui::CornerRadius::ZERO
+                        && rect.fill != egui::Color32::TRANSPARENT =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn label_rect(output: &egui::FullOutput, label: &str) -> egui::Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("palette label exists")
+    }
+
+    fn click(ctx: &egui::Context, app: &mut PaintApp, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            frame(
+                ctx,
+                app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn palettes_show_two_rows_of_fourteen_with_buttons_below_and_no_opacity_input() {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        crate::i18n::set_locale(&ctx, crate::i18n::Locale::English);
+        let mut app = PaintApp::new_blank(true, false, &ctx);
+        frame(&ctx, &mut app, Vec::new());
+        let output = frame(&ctx, &mut app, Vec::new());
+        let cells = swatches(&output);
+        assert_eq!(cells.len(), 56);
+        for palette in cells.chunks(28) {
+            for row in palette.chunks(14) {
+                assert!(row.iter().all(|rect| rect.top() == row[0].top()));
+            }
+            assert!(palette[14].top() > palette[0].bottom());
+        }
+        assert!(cells[28].left() > cells[13].right());
+        assert!(label_rect(&output, "Reset").top() >= cells[14].bottom() + 8.0);
+        assert!(label_rect(&output, "Capture").top() >= cells[42].bottom() + 8.0);
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Opacity")));
+    }
+
+    #[test]
+    fn captured_palette_scrolls_by_rows_and_selects_the_visible_absolute_color() {
+        let ctx = egui::Context::default();
+        let mut app = PaintApp::new_blank(true, false, &ctx);
+        app.editor.colors.captured = (0..70).map(|value| Color::rgb(value, 0, 0)).collect();
+        app.captured_palette_row = usize::MAX;
+        frame(&ctx, &mut app, Vec::new());
+        let output = frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.captured_palette_row, 3);
+        click(&ctx, &mut app, label_rect(&output, "▲").center());
+        assert_eq!(app.captured_palette_row, 2);
+        let output = frame(&ctx, &mut app, Vec::new());
+        click(&ctx, &mut app, swatches(&output)[31].center());
+        assert_eq!(app.editor.colors.foreground, app.editor.colors.captured[31]);
     }
 }

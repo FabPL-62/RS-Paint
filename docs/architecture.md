@@ -12,9 +12,15 @@ rspaint-app (egui, ventanas y sistema operativo)
 ## Componente de dibujo
 
 `rspaint-editor::Editor` posee el documento, historial, selecciones y operaciones
-en curso. `ToolSettings` agrupa las opciones que configura la interfaz: colores,
-tamaños, formas, relleno, mezcla, texto y tolerancia. Los snapshots de trazos,
+en curso. `DocumentColors` conserva por documento los colores primario y
+secundario, la paleta tradicional y los colores capturados. `ToolSettings`
+agrupa las opciones compartidas entre pestañas: tamaños, formas, relleno,
+mezcla, texto y tolerancia. Los snapshots de trazos,
 curvas, texto y transformaciones son privados al editor.
+
+La captura y ordenación por tono viven en `rspaint-core`; el editor conserva
+el resultado completo. La interfaz solamente decide qué dos filas mostrar y
+mantiene la posición de desplazamiento de cada pestaña.
 
 La UI selecciona herramientas mediante `set_tool`, modifica las opciones y
 traduce eventos a métodos como `begin_stroke`, `update_stroke`, `end_stroke`,

@@ -311,6 +311,7 @@ pub enum PickTarget {
 pub struct Editor {
     /// UI configures these options; operations remain owned by the editor.
     pub settings: ToolSettings,
+    pub colors: DocumentColors,
     pub document: Document,
     pub history: History,
     pub magnification: f32,
@@ -347,7 +348,6 @@ pub struct Editor {
     text_buffer: String,
     text_creating: Option<((i32, i32), (i32, i32))>,
     text_base: Option<PixelBuffer>,
-    custom_index: usize,
     sel_brush_boundary: Vec<rspaint_core::selection::BoundarySegment>,
     sel_brush_runs: Vec<HighlightRun>,
     pub pick_hold: Option<PickTarget>,
@@ -364,10 +364,6 @@ pub struct Editor {
 #[derive(Clone)]
 pub struct ToolSettings {
     pub tool: Tool,
-    pub foreground: Color,
-    pub background: Color,
-    pub palette: Vec<Color>,
-    pub custom_colors: Vec<Color>,
     pub brush_shape: BrushShape,
     pub brush_size: u32,
     pub eraser_size: u32,
@@ -395,16 +391,31 @@ pub struct ToolSettings {
     pub text_transparent: bool,
 }
 
+/// Color choices belong to one document and are never copied by Shared.
+pub struct DocumentColors {
+    pub foreground: Color,
+    pub background: Color,
+    pub palette: Vec<Color>,
+    pub captured: Vec<Color>,
+}
+
+impl Default for DocumentColors {
+    fn default() -> Self {
+        Self {
+            foreground: Color::BLACK,
+            background: Color::WHITE,
+            palette: palette::default_palette(),
+            captured: vec![Color::BLACK; 28],
+        }
+    }
+}
+
 pub type Shared = ToolSettings;
 
 impl Default for ToolSettings {
     fn default() -> Self {
         Self {
             tool: Tool::Pencil,
-            foreground: Color::BLACK,
-            background: Color::WHITE,
-            palette: palette::default_palette(),
-            custom_colors: palette::default_custom_colors(),
             brush_shape: BrushShape::Circle,
             brush_size: 4,
             eraser_size: 8,
@@ -478,6 +489,7 @@ impl Editor {
         let history = History::new(document.buffer.clone(), "New");
         Self {
             settings: ToolSettings::default(),
+            colors: DocumentColors::default(),
             document,
             history,
             magnification: 1.0,
@@ -514,7 +526,6 @@ impl Editor {
             text_buffer: String::new(),
             text_creating: None,
             text_base: None,
-            custom_index: 0,
             sel_brush_boundary: Vec::new(),
             sel_brush_runs: Vec::new(),
             pick_hold: None,

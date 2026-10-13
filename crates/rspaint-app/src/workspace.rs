@@ -82,9 +82,17 @@ impl WindowState {
         if index >= self.tabs.len() {
             return;
         }
+        let closing_active = index == self.active;
         self.tabs.remove(index);
         if self.active > index || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
+        }
+        if closing_active {
+            if let Some(tab) = self.tabs.get_mut(self.active) {
+                // Canvas GPU resources are shared by the tabs in this window.
+                // Restore the newly visible document just as on a tab switch.
+                tab.editor.invalidate_canvas();
+            }
         }
     }
 
@@ -418,7 +426,12 @@ fn show_tab_bar(ctx: &egui::Context, window: &mut WindowState, drag: &mut Option
                             }
                         }
                         if ui
-                            .button("+")
+                            .add_sized(
+                                egui::vec2(TAB_HEIGHT, TAB_HEIGHT),
+                                egui::Button::new("+")
+                                    .corner_radius(0)
+                                    .stroke(egui::Stroke::NONE),
+                            )
                             .on_hover_text(crate::i18n::tr(ui.ctx(), "New tab"))
                             .clicked()
                         {
@@ -578,6 +591,46 @@ mod tests {
     use super::*;
     use rspaint_core::{Color, PixelBuffer};
     use rspaint_editor::PointerButton;
+
+    #[test]
+    fn closing_active_tab_restores_the_surviving_document_texture() {
+        let ctx = egui::Context::default();
+        for active in 0..3 {
+            let original = PaintApp::new_blank(true, false, &ctx);
+            let shared = original.editor.capture_shared();
+            let mut window = WindowState::new(egui::ViewportId::ROOT, 0, original);
+            window.new_tab(&ctx, true, false, &shared);
+            window.new_tab(&ctx, true, false, &shared);
+            for (index, tab) in window.tabs.iter_mut().enumerate() {
+                tab.editor.load_buffer(
+                    PixelBuffer::new(8 + index as u32, 6, Color::rgb(index as u8, 80, 150)),
+                    None,
+                );
+                assert!(tab.editor.take_pending_upload().is_some());
+                assert!(tab.editor.take_pending_upload().is_none());
+            }
+            window.active = active;
+            window.close_tab(active);
+            let editor = &mut window.tabs[window.active].editor;
+            let upload = editor
+                .take_pending_upload()
+                .expect("visible tab must restore its texture");
+            assert_eq!((upload.x, upload.y), (0, 0));
+            assert_eq!(
+                (upload.width, upload.height),
+                (editor.document.width(), editor.document.height())
+            );
+            assert_eq!(upload.data, editor.document.buffer.data());
+            // Closing an inactive tab keeps the same document visible.
+            window.close_tab(1 - window.active);
+            assert!(window.tabs[window.active]
+                .editor
+                .take_pending_upload()
+                .is_none());
+            window.close_tab(0);
+            assert!(window.tabs.is_empty());
+        }
+    }
 
     struct DropFiles(std::path::PathBuf);
 

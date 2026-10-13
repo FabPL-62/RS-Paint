@@ -29,8 +29,8 @@ pub enum ColorTarget {
     Background,
     /// A palette swatch, by index.
     Palette(usize),
-    /// A custom (recent) color swatch, by index.
-    Custom(usize),
+    /// A captured palette swatch, by absolute index.
+    Captured(usize),
     /// The Outliner's concave-corner color.
     Outliner,
 }
@@ -65,6 +65,7 @@ pub struct PaintApp {
     pub custom_zoom_percent: f32,
     color_picker: Option<ColorPicker>,
     pub swatch_hold_fired: bool,
+    pub captured_palette_row: usize,
     ctrl_down: bool,
     ctrl_tap_used: bool,
     pub show_history: bool,
@@ -123,6 +124,7 @@ impl PaintApp {
             custom_zoom_percent: 100.0,
             color_picker: None,
             swatch_hold_fired: false,
+            captured_palette_row: 0,
             ctrl_down: false,
             ctrl_tap_used: false,
             show_history: false,
@@ -214,15 +216,15 @@ impl PaintApp {
         let color = Color::rgba(base.r, base.g, base.b, alpha);
         self.editor.note_transparency(color);
         match target {
-            ColorTarget::Foreground => self.editor.settings.foreground = color,
-            ColorTarget::Background => self.editor.settings.background = color,
+            ColorTarget::Foreground => self.editor.colors.foreground = color,
+            ColorTarget::Background => self.editor.colors.background = color,
             ColorTarget::Palette(index) => {
-                if let Some(slot) = self.editor.settings.palette.get_mut(index) {
+                if let Some(slot) = self.editor.colors.palette.get_mut(index) {
                     *slot = color;
                 }
             }
-            ColorTarget::Custom(index) => {
-                if let Some(slot) = self.editor.settings.custom_colors.get_mut(index) {
+            ColorTarget::Captured(index) => {
+                if let Some(slot) = self.editor.colors.captured.get_mut(index) {
                     *slot = color;
                 }
             }

@@ -57,7 +57,7 @@ impl Editor {
     }
 
     pub fn swap_colors(&mut self) {
-        std::mem::swap(&mut self.settings.foreground, &mut self.settings.background);
+        std::mem::swap(&mut self.colors.foreground, &mut self.colors.background);
     }
 
     pub fn note_transparency(&mut self, color: Color) {
@@ -68,45 +68,17 @@ impl Editor {
 
     pub fn note_used_color(&mut self, color: Color) {
         self.note_transparency(color);
-        let count = self.settings.custom_colors.len();
-        if count == 0 {
-            return;
-        }
-        if self.settings.palette.contains(&color) || self.settings.custom_colors.contains(&color) {
-            return;
-        }
-        self.settings.custom_colors[self.custom_index % count] = color;
-        self.custom_index = (self.custom_index + 1) % count;
     }
 
     pub fn reset_colors(&mut self) {
-        self.settings.palette = palette::default_palette();
+        self.colors.palette = palette::default_palette();
     }
 
     pub fn capture_colors(&mut self) {
-        let count = rspaint_core::palette::CUSTOM_COLOR_COUNT;
-        let mut found: Vec<Color> = Vec::new();
-        'scan: for y in 0..self.document.height() {
-            for x in 0..self.document.width() {
-                let Some(color) = self.document.buffer.get(x, y) else {
-                    continue;
-                };
-                if color.a == 0 || self.settings.palette.contains(&color) || found.contains(&color)
-                {
-                    continue;
-                }
-                found.push(color);
-                if found.len() >= count {
-                    break 'scan;
-                }
-            }
-        }
-        let mut row = vec![Color::BLACK; count];
-        for (slot, color) in row.iter_mut().zip(&found) {
-            *slot = *color;
-        }
-        self.settings.custom_colors = row;
-        self.custom_index = found.len() % count;
+        let mut colors = palette::colors_by_hue(&self.document.buffer);
+        let cells = colors.len().max(28).div_ceil(14) * 14;
+        colors.resize(cells, Color::BLACK);
+        self.colors.captured = colors;
     }
 
     pub fn pick_hold(&self) -> Option<PickTarget> {
@@ -119,8 +91,8 @@ impl Editor {
         }
         if let Some(color) = self.document.buffer.get(p.0 as u32, p.1 as u32) {
             match target {
-                PickTarget::Primary => self.settings.foreground = color,
-                PickTarget::Secondary => self.settings.background = color,
+                PickTarget::Primary => self.colors.foreground = color,
+                PickTarget::Secondary => self.colors.background = color,
             }
         }
     }

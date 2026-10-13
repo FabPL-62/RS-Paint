@@ -8,6 +8,63 @@ fn editor() -> Editor {
     editor
 }
 
+#[test]
+fn opened_image_uses_exact_top_left_color_as_its_secondary_color() {
+    let mut e = editor();
+    let top_left = Color::rgba(60, 120, 180, 75);
+    let mut image = PixelBuffer::new(3, 2, Color::WHITE);
+    image.set(0, 0, top_left);
+    e.load_buffer(image, Some("sample.png".into()));
+    assert_eq!(e.colors.background, top_left);
+    assert!(!e.is_modified());
+    assert!(e.document.transparent);
+}
+
+#[test]
+fn sharing_tool_options_never_overwrites_another_documents_colors_or_palettes() {
+    let mut first = editor();
+    let mut second = editor();
+    first.colors.foreground = Color::rgb(200, 0, 0);
+    first.colors.background = Color::rgb(0, 150, 0);
+    first.colors.palette[0] = Color::rgb(30, 50, 70);
+    first.colors.captured[3] = Color::WHITE;
+    first.settings.brush_size = 21;
+    second.colors.foreground = Color::rgb(0, 0, 200);
+    second.colors.background = Color::rgb(100, 90, 80);
+    let palette = second.colors.palette.clone();
+    let captured = second.colors.captured.clone();
+    second.apply_shared(&first.capture_shared());
+    assert_eq!(second.settings.brush_size, 21);
+    assert_eq!(second.colors.foreground, Color::rgb(0, 0, 200));
+    assert_eq!(second.colors.background, Color::rgb(100, 90, 80));
+    assert_eq!(second.colors.palette, palette);
+    assert_eq!(second.colors.captured, captured);
+    assert_eq!(first.colors.palette[0], Color::rgb(30, 50, 70));
+}
+
+#[test]
+fn captured_palette_retains_all_colors_beyond_two_rows_and_reset_is_independent() {
+    let mut e = editor();
+    assert_eq!(e.colors.captured, vec![Color::BLACK; 28]);
+    let mut buffer = PixelBuffer::new(70, 1, Color::WHITE);
+    for x in 0..70 {
+        buffer.set(x, 0, Color::from_hsv((69 - x) as f32 * 5.0, 1.0, 1.0));
+    }
+    e.load_buffer(buffer, None);
+    let expected = rspaint_core::palette::colors_by_hue(&e.document.buffer);
+    assert_eq!(expected.len(), 70);
+    e.capture_colors();
+    assert_eq!(e.colors.captured, expected);
+    e.colors.palette[0] = Color::WHITE;
+    e.reset_colors();
+    assert_eq!(e.colors.palette, rspaint_core::palette::default_palette());
+    assert_eq!(e.colors.captured, expected);
+    // Painting does not overwrite colors collected from the image.
+    e.begin_stroke((0, 0), PointerButton::Primary);
+    e.end_stroke(false);
+    assert_eq!(e.colors.captured, expected);
+}
+
 fn select(editor: &mut Editor, start: (i32, i32), end: (i32, i32)) {
     editor.set_tool(Tool::Select);
     editor.begin_selection_drag(start, Tool::Select, false, false);
@@ -57,10 +114,10 @@ fn selection_clips_drawing_without_losing_the_selection() {
 #[test]
 fn secondary_pointer_uses_secondary_color() {
     let mut e = editor();
-    e.settings.background = Color::rgb(240, 80, 40);
+    e.colors.background = Color::rgb(240, 80, 40);
     e.begin_stroke((2, 2), PointerButton::Secondary);
     e.end_stroke(false);
-    assert_eq!(e.document.buffer.get(2, 2), Some(e.settings.background));
+    assert_eq!(e.document.buffer.get(2, 2), Some(e.colors.background));
 }
 
 #[test]
@@ -103,8 +160,10 @@ fn rotation_transforms_selection_pixels_and_is_undoable() {
     e.transform_selection_direct(FlipRotate::Rotate90);
     assert_eq!(e.selection_pixels().unwrap().size(), [2, 3]);
     assert_eq!(e.selection_pixels().unwrap().get(1, 0), Some(Color::BLACK));
+    e.colors.palette[0] = Color::rgb(80, 50, 20);
     e.undo();
     assert_eq!(e.selection_pixels().unwrap(), &original);
+    assert_eq!(e.colors.palette[0], Color::rgb(80, 50, 20));
 }
 
 #[test]

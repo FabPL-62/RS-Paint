@@ -146,9 +146,13 @@ en [`docs/architecture.md`](docs/architecture.md).
   fuera.
 - **Paleta**: selector avanzado **HSV** (cuadrado S/V, tira de hue, barra de
   valor) en un popup junto al color; la paleta es editable (long-press edita un
-  cuadro) y la fila de **colores recientes** acumula los colores usados; botones
-  **Reset** (2 primeras filas) y **Capture** (toma colores de la imagen). Clic
-  derecho en el indicador intercambia primario/secundario.
+  cuadro). Cada imagen conserva sus colores primario/secundario y sus paletas.
+  La paleta tradicional tiene 2 filas de 14 colores y **Reset** debajo.
+  A su derecha, **Capture** recoge los colores distintos de la imagen y los
+  ordena por tono; muestra 2 filas de 14 colores, con flechas para recorrerlas.
+  Al abrir una imagen, el color secundario toma el píxel superior izquierdo.
+  La opacidad se ajusta desde el selector de color. Clic derecho en el
+  indicador intercambia primario/secundario.
 - **Imagen**: Attributes (tamaño y transparencia), Clear Image, Invert Colors,
   Crop to Selection.
 - **Archivo**: New, Open, Save, Save As (PNG y BMP para guardar; PNG, BMP,

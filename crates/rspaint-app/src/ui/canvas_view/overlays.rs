@@ -188,7 +188,7 @@ pub(super) fn paint_text_overlay(
             let p1 = min + egui::vec2(b.0 * magnification, b.1 * magnification);
             ui.painter().line_segment(
                 [p0, p1],
-                egui::Stroke::new(1.0, to_color32(app.editor.settings.foreground)),
+                egui::Stroke::new(1.0, to_color32(app.editor.colors.foreground)),
             );
         }
     }
