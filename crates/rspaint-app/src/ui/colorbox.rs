@@ -17,6 +17,81 @@ const HOLD_SECONDS: f64 = 0.4;
 const COLUMNS: usize = 14;
 const VISIBLE_ROWS: usize = 2;
 
+/// The up/down arrow textures for the captured-palette browser, loaded once.
+pub fn arrow_icons(ctx: &egui::Context) -> (egui::TextureHandle, egui::TextureHandle) {
+    let id = egui::Id::new("ui-arrow-icons");
+    if let Some(icons) =
+        ctx.data(|data| data.get_temp::<(egui::TextureHandle, egui::TextureHandle)>(id))
+    {
+        return icons;
+    }
+    let load = |name: &str, bytes: &[u8]| {
+        let image = image::load_from_memory(bytes)
+            .expect("valid embedded arrow icon")
+            .to_rgba8();
+        let size = [image.width() as usize, image.height() as usize];
+        ctx.load_texture(
+            name,
+            egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
+            egui::TextureOptions::NEAREST,
+        )
+    };
+    let icons = (
+        load(
+            "ui-arrow-up",
+            include_bytes!("../../assets/ui/arrow-up.png"),
+        ),
+        load(
+            "ui-arrow-down",
+            include_bytes!("../../assets/ui/arrow-down.png"),
+        ),
+    );
+    ctx.data_mut(|data| data.insert_temp(id, icons.clone()));
+    icons
+}
+
+/// A small icon button that draws `texture` centered at its original size.
+fn arrow_button(
+    ui: &mut egui::Ui,
+    texture: &egui::TextureHandle,
+    enabled: bool,
+    size: egui::Vec2,
+) -> egui::Response {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let (corner, fill) = {
+        let visuals = ui.style().interact(&response);
+        let fill = if enabled {
+            visuals.bg_fill
+        } else {
+            ui.style().visuals.widgets.noninteractive.bg_fill
+        };
+        (visuals.corner_radius, fill)
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, corner, fill);
+    // Draw at the image's native pixel size (one texture pixel per physical
+    // screen pixel), centered in the button.
+    let image_size = texture.size_vec2() / ui.ctx().pixels_per_point();
+    let image_rect = egui::Rect::from_center_size(rect.center(), image_size);
+    let tint = if enabled {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_gray(110)
+    };
+    painter.image(
+        texture.id(),
+        image_rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        tint,
+    );
+    response
+}
+
 /// Traditional and captured palettes belong to this document only.
 pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
     egui::TopBottomPanel::bottom("colorbox").show(ctx, |ui| {
@@ -82,25 +157,17 @@ fn captured_palette(app: &mut PaintApp, ui: &mut egui::Ui) {
                     swatch_row(ui, colors, RowKind::Captured(start + row * COLUMNS), app);
                 }
             });
+            let (up, down) = arrow_icons(ui.ctx());
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = SWATCH_GAP;
-                ui.spacing_mut().button_padding = egui::vec2(1.0, 0.0);
                 let button_size = egui::vec2(SWATCH, SWATCH);
-                if ui
-                    .add_enabled(
-                        app.captured_palette_row > 0,
-                        egui::Button::new("▲").min_size(button_size),
-                    )
+                if arrow_button(ui, &up, app.captured_palette_row > 0, button_size)
                     .on_hover_text(crate::i18n::tr(ui.ctx(), "Previous palette row"))
                     .clicked()
                 {
                     app.captured_palette_row -= 1;
                 }
-                if ui
-                    .add_enabled(
-                        app.captured_palette_row < max_row,
-                        egui::Button::new("▼").min_size(button_size),
-                    )
+                if arrow_button(ui, &down, app.captured_palette_row < max_row, button_size)
                     .on_hover_text(crate::i18n::tr(ui.ctx(), "Next palette row"))
                     .clicked()
                 {
@@ -248,6 +315,7 @@ mod tests {
                 egui::Shape::Rect(rect)
                     if rect.rect.size() == egui::vec2(SWATCH, SWATCH)
                         && rect.corner_radius == egui::CornerRadius::ZERO
+                        && rect.brush.is_none()
                         && rect.fill != egui::Color32::TRANSPARENT =>
                 {
                     Some(rect.rect)
@@ -268,6 +336,29 @@ mod tests {
                 _ => None,
             })
             .expect("palette label exists")
+    }
+
+    fn image_rect(output: &egui::FullOutput, id: egui::TextureId) -> egui::Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if shape.shape.texture_id() != id {
+                    return None;
+                }
+                match &shape.shape {
+                    egui::Shape::Rect(rect) => Some(rect.rect),
+                    egui::Shape::Mesh(mesh) => {
+                        let mut rect = egui::Rect::NOTHING;
+                        for vertex in &mesh.vertices {
+                            rect.extend_with(vertex.pos);
+                        }
+                        Some(rect)
+                    }
+                    _ => None,
+                }
+            })
+            .expect("arrow image drawn")
     }
 
     fn click(ctx: &egui::Context, app: &mut PaintApp, pos: egui::Pos2) {
@@ -319,7 +410,8 @@ mod tests {
         frame(&ctx, &mut app, Vec::new());
         let output = frame(&ctx, &mut app, Vec::new());
         assert_eq!(app.captured_palette_row, 3);
-        click(&ctx, &mut app, label_rect(&output, "▲").center());
+        let (up, _) = arrow_icons(&ctx);
+        click(&ctx, &mut app, image_rect(&output, up.id()).center());
         assert_eq!(app.captured_palette_row, 2);
         let output = frame(&ctx, &mut app, Vec::new());
         click(&ctx, &mut app, swatches(&output)[31].center());
