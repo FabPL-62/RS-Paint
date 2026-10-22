@@ -1,16 +1,21 @@
 //! An owned RGBA8 pixel buffer.
 
 use crate::color::Color;
+use std::sync::Arc;
 
 /// An owned, top-left-origin RGBA8 image buffer with 4 bytes per pixel.
 ///
 /// The raw bytes are laid out row-major and can be uploaded directly to a GPU
 /// texture. Alpha is stored non-premultiplied.
+///
+/// Cloning is cheap: the pixels are shared until the clone is written to
+/// (copy-on-write). This keeps per-stroke snapshots and undo history from
+/// copying the whole image.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PixelBuffer {
     width: u32,
     height: u32,
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
 }
 
 impl PixelBuffer {
@@ -29,7 +34,7 @@ impl PixelBuffer {
         Self {
             width,
             height,
-            data,
+            data: Arc::new(data),
         }
     }
 
@@ -58,9 +63,17 @@ impl PixelBuffer {
         &self.data
     }
 
+    /// A cheap, shared handle to the raw RGBA8 bytes.
+    ///
+    /// Used to hand the full-canvas bytes to the renderer without copying them;
+    /// the next mutation copies them first (copy-on-write).
+    pub fn shared_data(&self) -> Arc<Vec<u8>> {
+        Arc::clone(&self.data)
+    }
+
     /// Mutable access to the raw RGBA8 bytes.
     pub fn data_mut(&mut self) -> &mut [u8] {
-        &mut self.data
+        Arc::make_mut(&mut self.data).as_mut_slice()
     }
 
     fn index(&self, x: u32, y: u32) -> usize {
@@ -92,7 +105,8 @@ impl PixelBuffer {
             return;
         }
         let i = self.index(x, y);
-        self.data[i..i + 4].copy_from_slice(&color.to_array());
+        let data = Arc::make_mut(&mut self.data);
+        data[i..i + 4].copy_from_slice(&color.to_array());
     }
 
     /// Paints `color` at `(x, y)` using the given blend mode.
@@ -138,9 +152,12 @@ impl PixelBuffer {
         let w = w.min(self.width - x);
         let h = h.min(self.height - y);
         let len = w as usize * 4;
+        let width = self.width as usize;
+        let x = x as usize;
+        let dst = Arc::make_mut(&mut self.data);
         for row in 0..h {
-            let start = self.index(x, y + row);
-            self.data[start..start + len].copy_from_slice(&src.data[start..start + len]);
+            let start = ((y + row) as usize * width + x) * 4;
+            dst[start..start + len].copy_from_slice(&src.data[start..start + len]);
         }
     }
 
@@ -151,10 +168,12 @@ impl PixelBuffer {
         let copy_w = width.min(self.width);
         let copy_h = height.min(self.height);
         let len = copy_w as usize * 4;
+        let out_width = out.width as usize;
+        let data = Arc::make_mut(&mut out.data);
         for y in 0..copy_h {
             let src = self.index(0, y);
-            let dst = out.index(0, y);
-            out.data[dst..dst + len].copy_from_slice(&self.data[src..src + len]);
+            let dst = y as usize * out_width * 4;
+            data[dst..dst + len].copy_from_slice(&self.data[src..src + len]);
         }
         out
     }
@@ -189,7 +208,7 @@ impl PixelBuffer {
     /// Fills the whole buffer with a single color.
     pub fn fill(&mut self, color: Color) {
         let color = color.to_array();
-        for pixel in self.data.chunks_exact_mut(4) {
+        for pixel in Arc::make_mut(&mut self.data).chunks_exact_mut(4) {
             pixel.copy_from_slice(&color);
         }
     }
@@ -296,5 +315,18 @@ mod tests {
         buffer.clear();
         assert_eq!(buffer.get(0, 0), Some(Color::TRANSPARENT));
         assert_eq!(buffer.get(1, 1), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn clones_are_independent_after_a_write() {
+        let mut a = PixelBuffer::new(2, 2, Color::BLACK);
+        let mut b = a.clone();
+        // A clone shares the pixels until one side is written to.
+        a.set(0, 0, Color::WHITE);
+        b.set(1, 1, Color::rgb(200, 10, 20));
+        assert_eq!(a.get(0, 0), Some(Color::WHITE));
+        assert_eq!(a.get(1, 1), Some(Color::BLACK));
+        assert_eq!(b.get(0, 0), Some(Color::BLACK));
+        assert_eq!(b.get(1, 1), Some(Color::rgb(200, 10, 20)));
     }
 }

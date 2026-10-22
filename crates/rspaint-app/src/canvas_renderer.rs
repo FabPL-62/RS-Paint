@@ -528,7 +528,7 @@ mod tests {
         pending.stage(&mut editor);
         let upload = pending.take().unwrap();
         assert_eq!([upload.width, upload.height], [16, 16]);
-        assert_eq!(upload.data, editor.document.buffer.data());
+        assert_eq!(upload.data.as_slice(), editor.document.buffer.data());
         // After the backend consumes the snapshot, unchanged frames send nothing.
         pending.stage(&mut editor);
         assert!(pending.take().is_none());

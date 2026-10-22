@@ -214,7 +214,7 @@ fn new_document_clears_saved_path_and_keeps_tool_options() {
 fn renderer_receives_only_pending_pixel_regions() {
     let mut e = editor();
     assert_eq!(
-        e.take_pending_upload().unwrap().data,
+        e.take_pending_upload().unwrap().data.as_slice(),
         e.document.buffer.data()
     );
     assert!(e.take_pending_upload().is_none());
@@ -225,7 +225,7 @@ fn renderer_receives_only_pending_pixel_regions() {
     let upload = e.take_pending_upload().unwrap();
     assert!(upload.width < 16 && upload.height < 16);
     assert_eq!(
-        upload.data,
+        upload.data.as_slice(),
         e.document
             .buffer
             .region_rgba(upload.x, upload.y, upload.width, upload.height)

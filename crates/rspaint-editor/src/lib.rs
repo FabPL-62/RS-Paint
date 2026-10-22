@@ -36,7 +36,8 @@ pub struct Upload {
     pub y: u32,
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u8>,
+    /// RGBA8 bytes, shared with the document buffer when uploading it whole.
+    pub data: std::sync::Arc<Vec<u8>>,
 }
 /// An axis-aligned, inclusive integer rectangle in image coordinates.
 #[derive(Clone, Copy, Debug)]

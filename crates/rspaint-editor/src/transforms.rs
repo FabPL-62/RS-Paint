@@ -487,7 +487,7 @@ impl Editor {
                 y: 0,
                 width,
                 height,
-                data: self.document.buffer.data().to_vec(),
+                data: self.document.buffer.shared_data(),
             });
         }
 
@@ -502,7 +502,7 @@ impl Editor {
             y,
             width: w,
             height: h,
-            data: self.document.buffer.region_rgba(x, y, w, h),
+            data: std::sync::Arc::new(self.document.buffer.region_rgba(x, y, w, h)),
         })
     }
 

@@ -620,7 +620,7 @@ mod tests {
                 (upload.width, upload.height),
                 (editor.document.width(), editor.document.height())
             );
-            assert_eq!(upload.data, editor.document.buffer.data());
+            assert_eq!(upload.data.as_slice(), editor.document.buffer.data());
             // Closing an inactive tab keeps the same document visible.
             window.close_tab(1 - window.active);
             assert!(window.tabs[window.active]
