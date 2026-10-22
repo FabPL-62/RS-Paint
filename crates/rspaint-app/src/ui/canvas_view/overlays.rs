@@ -247,15 +247,17 @@ pub(super) fn paint_selection_overlay(
     // Translucent highlight over the selected area (hidden while drawing is
     // clipped to the selection, so the real colors show through).
     if show_highlight {
-        if let Some(runs) = app.editor.selection_brush_runs() {
-            paint_selection_highlight(
-                painter,
-                ui.clip_rect(),
-                canvas_rect,
-                magnification,
-                runs,
-                (0, 0),
-            );
+        if let Some(tiles) = app.editor.selection_brush_tiles() {
+            for tile in tiles {
+                paint_selection_highlight(
+                    painter,
+                    ui.clip_rect(),
+                    canvas_rect,
+                    magnification,
+                    &tile.runs,
+                    (0, 0),
+                );
+            }
         } else if let Some((runs, origin)) = app.editor.selection_runs() {
             paint_selection_highlight(
                 painter,
@@ -268,15 +270,33 @@ pub(super) fn paint_selection_overlay(
         }
     }
 
-    if let Some(segments) = app.editor.selection_brush_boundary() {
+    if let Some(tiles) = app.editor.selection_brush_tiles() {
         // While painting a Selection Brush stroke, show only its outline
         // (static); the existing selection's animated outline is suppressed so
         // no stale edges remain at the intersections.
-        paint_mask_boundary(painter, canvas_rect, magnification, segments, (0, 0), 0.0);
+        for tile in tiles {
+            paint_mask_boundary(
+                painter,
+                ui.clip_rect(),
+                canvas_rect,
+                magnification,
+                &tile.boundary,
+                (0, 0),
+                0.0,
+            );
+        }
     } else {
         // The active selection (mask boundary or rect/lasso outline)...
         if let Some((segments, origin)) = app.editor.selection_boundary() {
-            paint_mask_boundary(painter, canvas_rect, magnification, segments, origin, phase);
+            paint_mask_boundary(
+                painter,
+                ui.clip_rect(),
+                canvas_rect,
+                magnification,
+                segments,
+                origin,
+                phase,
+            );
             drew = true;
         }
         // ...plus the in-progress selection (visible while accumulating).
@@ -333,12 +353,17 @@ pub(super) fn outline_to_poly(
 /// using the precomputed outline segments (same style as the free-form select).
 pub(super) fn paint_mask_boundary(
     painter: &egui::Painter,
+    clip: egui::Rect,
     canvas_rect: egui::Rect,
     magnification: f32,
     segments: &[rspaint_core::selection::BoundarySegment],
     (ox, oy): (i32, i32),
     phase: f32,
 ) {
+    let visible = canvas_rect.intersect(clip);
+    if visible.width() <= 0.0 || visible.height() <= 0.0 {
+        return;
+    }
     let to_screen = |(x, y): (i32, i32)| -> Pos2 {
         canvas_rect.min
             + egui::vec2(
@@ -347,7 +372,14 @@ pub(super) fn paint_mask_boundary(
             )
     };
     for &(start, end) in segments {
-        paint_ant_segment(painter, to_screen(start), to_screen(end), phase);
+        let a = to_screen(start);
+        let b = to_screen(end);
+        // Skip segments entirely outside the visible area; the ants of a
+        // large or off-screen selection would otherwise all be tessellated.
+        if !visible.intersects(egui::Rect::from_two_pos(a, b)) {
+            continue;
+        }
+        paint_ant_segment(painter, a, b, phase);
     }
 }
 

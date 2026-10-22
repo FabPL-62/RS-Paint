@@ -120,6 +120,17 @@ struct Stroke {
 /// A horizontal selection highlight run `(y, x_start, x_end)`, inclusive.
 pub type HighlightRun = (i32, i32, i32);
 
+/// The cached outline and highlight runs of one tile of an in-progress
+/// Selection Brush stroke. Coordinates are absolute canvas pixels.
+///
+/// The mask is split into tiles so a stroke only recomputes the tiles it
+/// touches, instead of rescanning the whole canvas on every pointer move.
+#[derive(Default)]
+pub struct SelectionBrushTile {
+    pub boundary: Vec<rspaint_core::selection::BoundarySegment>,
+    pub runs: Vec<HighlightRun>,
+}
+
 /// A selection undo snapshot: the selection, the canvas and the rotation pivot.
 type SelectionUndo = (Option<Selection>, PixelBuffer, Option<(f32, f32)>);
 
@@ -348,8 +359,8 @@ pub struct Editor {
     text_buffer: String,
     text_creating: Option<((i32, i32), (i32, i32))>,
     text_base: Option<PixelBuffer>,
-    sel_brush_boundary: Vec<rspaint_core::selection::BoundarySegment>,
-    sel_brush_runs: Vec<HighlightRun>,
+    sel_brush_tiles: Vec<SelectionBrushTile>,
+    sel_brush_tile_cols: i32,
     pub pick_hold: Option<PickTarget>,
     pub pointer: Option<(i32, i32)>,
     stroke: Option<Stroke>,
@@ -526,8 +537,8 @@ impl Editor {
             text_buffer: String::new(),
             text_creating: None,
             text_base: None,
-            sel_brush_boundary: Vec::new(),
-            sel_brush_runs: Vec::new(),
+            sel_brush_tiles: Vec::new(),
+            sel_brush_tile_cols: 0,
             pick_hold: None,
             pointer: None,
             stroke: None,

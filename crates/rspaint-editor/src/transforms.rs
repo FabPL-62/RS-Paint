@@ -27,8 +27,8 @@ impl Editor {
         self.text_base = None;
         self.magic_wand_seed = None;
         self.sel_brush_mask.clear();
-        self.sel_brush_boundary.clear();
-        self.sel_brush_runs.clear();
+        self.sel_brush_tiles.clear();
+        self.sel_brush_tile_cols = 0;
         self.sel_brush_active = false;
         self.sel_brush_last = None;
         self.pointer = None;
