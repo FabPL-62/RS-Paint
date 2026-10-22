@@ -28,8 +28,27 @@ El plan de desarrollo por fases está en [`plans/main.md`](plans/main.md).
 - **Rust estable** (probado con Rust 1.90). Instálalo desde
   <https://rustup.rs/>.
 - Una **GPU** con backend soportado por `wgpu` (DirectX 12 en Windows, Vulkan en
-  Linux, Metal en macOS). No se necesita instalar nada extra aparte de los
-  drivers.
+  Linux, Metal en macOS). En Windows/macOS normalmente bastan los drivers; en
+  Linux revisa el punto siguiente.
+- **Linux**: además del compilador de Rust hace falta un enlazador de C
+  (`build-essential` en Debian/Ubuntu, `base-devel` en Arch, `gcc` en Fedora),
+  un driver de Vulkan (`mesa-vulkan-drivers` o el propietario de NVIDIA) y las
+  librerías habituales del escritorio (Wayland o X11). `fontconfig` es opcional:
+  si está, la herramienta Text usa las fuentes del sistema; si no, usa las
+  fuentes incluidas. Los diálogos de archivo usan `xdg-desktop-portal` (KDE,
+  GNOME, etc.) y, como respaldo, `zenity`.
+
+Ejemplo en Debian/Ubuntu:
+
+```sh
+sudo apt install build-essential mesa-vulkan-drivers libvulkan1 fontconfig zenity
+```
+
+En Fedora:
+
+```sh
+sudo dnf install gcc mesa-vulkan-drivers vulkan-loader fontconfig zenity
+```
 
 ## Compilar y ejecutar
 

@@ -51,14 +51,17 @@ impl FontSet {
     /// Loads the fonts, preferring system fonts and falling back to bundled ones.
     pub fn load() -> Self {
         let sans = pick_font(
+            "sans-serif",
             &["segoeui.ttf", "arial.ttf", "calibri.ttf", "tahoma.ttf"],
             epaint_default_fonts::UBUNTU_LIGHT,
         );
         let serif = pick_font(
+            "serif",
             &["times.ttf", "georgia.ttf", "constan.ttf", "cambria.ttc"],
             epaint_default_fonts::UBUNTU_LIGHT,
         );
         let mono = pick_font(
+            "monospace",
             &["consola.ttf", "cour.ttf", "lucon.ttf"],
             epaint_default_fonts::HACK_REGULAR,
         );
@@ -75,18 +78,148 @@ impl FontSet {
 }
 
 /// Loads the first readable system font, else the bundled fallback.
-fn pick_font(names: &[&str], fallback: &[u8]) -> FontVec {
-    if let Ok(windir) = std::env::var("WINDIR") {
-        for name in names {
-            let path = format!("{windir}\\Fonts\\{name}");
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(font) = FontVec::try_from_vec(bytes) {
-                    return font;
-                }
-            }
+fn pick_font(family: &str, names: &[&str], fallback: &[u8]) -> FontVec {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(font) = load_windows_font(names) {
+            return font;
         }
+        let _ = family;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(font) = load_linux_font(family) {
+            return font;
+        }
+        let _ = names;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (family, names);
     }
     FontVec::try_from_vec(fallback.to_vec()).expect("bundled font is valid")
+}
+
+/// Reads a font file, returning `None` if it cannot be read or parsed.
+fn read_font(path: &std::path::Path) -> Option<FontVec> {
+    FontVec::try_from_vec(std::fs::read(path).ok()?).ok()
+}
+
+/// Loads a system font from the Windows fonts directory.
+#[cfg(target_os = "windows")]
+fn load_windows_font(names: &[&str]) -> Option<FontVec> {
+    let fonts = std::path::Path::new(&std::env::var("WINDIR").ok()?).join("Fonts");
+    names.iter().find_map(|name| read_font(&fonts.join(name)))
+}
+
+/// Loads a system font on Linux, using fontconfig when available and common
+/// font locations as a fallback (so minimal installs still get a real serif or
+/// monospace instead of a sans-serif bundled font).
+#[cfg(target_os = "linux")]
+fn load_linux_font(family: &str) -> Option<FontVec> {
+    if let Some(font) = fontconfig_match(family).and_then(|path| read_font(&path)) {
+        return Some(font);
+    }
+    linux_font_candidates(family)
+        .into_iter()
+        .find_map(|path| read_font(&path))
+}
+
+/// Asks fontconfig for the file backing a generic family.
+#[cfg(target_os = "linux")]
+fn fontconfig_match(family: &str) -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("fc-match")
+        .args(["--format", "%{file}", family])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+    path.is_file().then_some(path)
+}
+
+/// Well-known font files for a generic family, searched under common Linux
+/// font directories.
+#[cfg(target_os = "linux")]
+fn linux_font_candidates(family: &str) -> Vec<std::path::PathBuf> {
+    const SANS: &[&str] = &[
+        "DejaVuSans.ttf",
+        "LiberationSans-Regular.ttf",
+        "NotoSans-Regular.ttf",
+        "FreeSans.ttf",
+    ];
+    const SERIF: &[&str] = &[
+        "DejaVuSerif.ttf",
+        "LiberationSerif-Regular.ttf",
+        "NotoSerif-Regular.ttf",
+        "FreeSerif.ttf",
+    ];
+    const MONO: &[&str] = &[
+        "DejaVuSansMono.ttf",
+        "LiberationMono-Regular.ttf",
+        "NotoSansMono-Regular.ttf",
+        "FreeMono.ttf",
+    ];
+    let names = match family {
+        "serif" => SERIF,
+        "monospace" => MONO,
+        _ => SANS,
+    };
+
+    let mut roots = vec![
+        std::path::PathBuf::from("/usr/share/fonts"),
+        std::path::PathBuf::from("/usr/local/share/fonts"),
+        std::path::PathBuf::from("/usr/share/fonts/truetype"),
+        std::path::PathBuf::from("/usr/share/fonts/TTF"),
+        std::path::PathBuf::from("/usr/share/fonts/opentype"),
+    ];
+    if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+        roots.push(std::path::PathBuf::from(data).join("fonts"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        roots.push(home.join(".local/share/fonts"));
+        roots.push(home.join(".fonts"));
+    }
+
+    let mut found = Vec::new();
+    for root in roots {
+        find_font_files(&root, names, 4, &mut found);
+    }
+    found
+}
+
+/// Appends matching font files found under `dir` (recursively, up to `depth`).
+#[cfg(target_os = "linux")]
+fn find_font_files(
+    dir: &std::path::Path,
+    names: &[&str],
+    depth: usize,
+    found: &mut Vec<std::path::PathBuf>,
+) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            subdirs.push(path);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| names.iter().any(|wanted| name.eq_ignore_ascii_case(wanted)))
+        {
+            found.push(path);
+        }
+    }
+    for subdir in subdirs {
+        find_font_files(&subdir, names, depth - 1, found);
+    }
 }
 
 /// The height of a single line of text, in pixels.
