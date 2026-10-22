@@ -37,7 +37,7 @@ impl Editor {
         self.sel_brush_subtract = subtract;
         self.sel_brush_active = true;
         self.sel_brush_last = Some(p);
-        self.reset_sel_brush_tiles(width, height);
+        self.reset_sel_brush_tiles(width, height, (add || subtract) && self.selection.is_some());
         self.selection_brush_stamp(p, p);
     }
 
@@ -46,6 +46,9 @@ impl Editor {
             return;
         }
         if let Some(last) = self.sel_brush_last {
+            if last == p {
+                return;
+            }
             self.selection_brush_stamp(last, p);
         }
         self.sel_brush_last = Some(p);
@@ -119,39 +122,69 @@ impl Editor {
     pub(super) fn selection_brush_stamp(&mut self, from: (i32, i32), to: (i32, i32)) {
         let (width, height) = (self.document.width(), self.document.height());
         let brush = Brush::new(self.settings.brush_shape, self.settings.brush_size);
-        let subtract = self.sel_brush_subtract;
-        let mask = &mut self.sel_brush_mask;
-        let stamp = |cx: i32, cy: i32| {
-            brush.visit(cx, cy, |px, py| {
-                if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
-                    mask[(py as u32 * width + px as u32) as usize] = !subtract;
+        let spans = rspaint_core::draw::brush_line_spans(
+            [width as usize, height as usize],
+            from,
+            to,
+            &brush,
+        );
+        let cols = self.sel_brush_tile_cols;
+        let rows = self.sel_brush_tiles.len() as i32 / cols;
+        let mut dirty = vec![false; self.sel_brush_tiles.len()];
+        let value = !self.sel_brush_subtract;
+        for (y, spans) in spans {
+            let row = y as i32 / SEL_BRUSH_TILE;
+            for (left, right) in spans {
+                for col in left / SEL_BRUSH_TILE..=right / SEL_BRUSH_TILE {
+                    let start = left.max(col * SEL_BRUSH_TILE) as usize;
+                    let end = right.min((col + 1) * SEL_BRUSH_TILE - 1) as usize + 1;
+                    let pixels = &mut self.sel_brush_mask
+                        [y * width as usize + start..y * width as usize + end];
+                    if pixels.iter().all(|&selected| selected == value) {
+                        continue;
+                    }
+                    pixels.fill(value);
+                    // Adjacent tiles read these pixels when building their edges.
+                    for r in (row - 1).max(0)..=(row + 1).min(rows - 1) {
+                        for c in (col - 1).max(0)..=(col + 1).min(cols - 1) {
+                            dirty[(r * cols + c) as usize] = true;
+                        }
+                    }
                 }
-            });
-        };
-        if brush.size > 1 {
-            walk_dense_line(from, to, stamp);
-        } else {
-            walk_line(from, to, stamp);
+            }
         }
-        // Only the tiles the stamped segment reaches can change, so recompute
-        // just those instead of rescanning the whole mask.
-        let margin = brush.size as i32 / 2 + 2;
-        let c0 = (from.0.min(to.0) - margin).div_euclid(SEL_BRUSH_TILE);
-        let c1 = (from.0.max(to.0) + margin).div_euclid(SEL_BRUSH_TILE);
-        let r0 = (from.1.min(to.1) - margin).div_euclid(SEL_BRUSH_TILE);
-        let r1 = (from.1.max(to.1) + margin).div_euclid(SEL_BRUSH_TILE);
-        self.refresh_sel_brush_tiles(c0, r0, c1, r1);
+        for (index, changed) in dirty.into_iter().enumerate() {
+            if changed {
+                let c = index as i32 % cols;
+                let r = index as i32 / cols;
+                self.refresh_sel_brush_tiles(c, r, c, r);
+            }
+        }
     }
 
     /// Builds an empty tile grid for a canvas of the given size and fills it.
-    fn reset_sel_brush_tiles(&mut self, width: u32, height: u32) {
+    fn reset_sel_brush_tiles(&mut self, width: u32, height: u32, has_selection: bool) {
         let cols = tiles_along(width);
         let rows = tiles_along(height);
         self.sel_brush_tile_cols = cols;
         self.sel_brush_tiles = (0..(cols * rows) as usize)
-            .map(|_| SelectionBrushTile::default())
+            .map(|index| {
+                let x = index as i32 % cols * SEL_BRUSH_TILE;
+                let y = index as i32 / cols * SEL_BRUSH_TILE;
+                SelectionBrushTile {
+                    bounds: [
+                        x,
+                        y,
+                        (x + SEL_BRUSH_TILE).min(width as i32),
+                        (y + SEL_BRUSH_TILE).min(height as i32),
+                    ],
+                    ..Default::default()
+                }
+            })
             .collect();
-        self.refresh_sel_brush_tiles(0, 0, cols - 1, rows - 1);
+        if has_selection {
+            self.refresh_sel_brush_tiles(0, 0, cols - 1, rows - 1);
+        }
     }
 
     /// Recomputes the outline and highlight runs of the tiles in the given
@@ -178,7 +211,9 @@ impl Editor {
                 let (boundary, runs) =
                     tile_outline(&self.sel_brush_mask, width, height, tx, ty, tw, th);
                 let tile = &mut self.sel_brush_tiles[(r * cols + c) as usize];
+                tile.bounds = [tx, ty, tx + tw, ty + th];
                 tile.boundary = boundary;
+                tile.highlight_rects = highlight_rects(&runs);
                 tile.runs = runs;
             }
         }
@@ -193,6 +228,25 @@ impl Editor {
         let selection = self.selection.as_ref()?;
         Some((selection.runs.as_slice(), (selection.x, selection.y)))
     }
+}
+
+/// Merge consecutive equal horizontal spans into non-overlapping rectangles.
+fn highlight_rects(runs: &[HighlightRun]) -> Vec<[i32; 4]> {
+    let mut rects: Vec<[i32; 4]> = Vec::new();
+    let mut last = std::collections::BTreeMap::new();
+    for &(y, x0, x1) in runs {
+        let key = (x0, x1);
+        if let Some(&index) = last.get(&key) {
+            let rect: &mut [i32; 4] = &mut rects[index];
+            if rect[3] == y {
+                rect[3] = y + 1;
+                continue;
+            }
+        }
+        last.insert(key, rects.len());
+        rects.push([x0, y, x1 + 1, y + 1]);
+    }
+    rects
 }
 
 fn tiles_along(length: u32) -> i32 {
@@ -325,9 +379,107 @@ mod tests {
         }
         assert_eq!(covered, mask);
 
+        // Cached rectangles must cover the same pixels exactly once: merging
+        // rows must neither fill holes nor stack translucent highlights.
+        let mut covered = vec![0u8; mask.len()];
+        for tile in tiles {
+            for &[x0, y0, x1, y1] in &tile.highlight_rects {
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        covered[(y * width + x) as usize] += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            covered,
+            mask.iter().map(|&b| u8::from(b)).collect::<Vec<_>>()
+        );
+
         // The split tile outline must describe the same edges as one full scan.
         let full = rspaint_core::selection::boundary_segments(&mask, width as u32, height as u32);
         assert!(!boundary.is_empty());
         assert_eq!(unit_edges(&boundary), unit_edges(&full));
+    }
+
+    #[test]
+    fn selection_stamping_matches_reference_for_all_shapes_and_subtraction() {
+        use rspaint_core::draw::{walk_dense_line, walk_line};
+        for shape in [
+            BrushShape::Square,
+            BrushShape::Circle,
+            BrushShape::Diagonal,
+            BrushShape::ReverseDiagonal,
+        ] {
+            for size in [1, 3, 8, 65] {
+                let mut editor = Editor::new();
+                editor.load_buffer(PixelBuffer::new(150, 130, Color::WHITE), None);
+                editor.settings.brush_shape = shape;
+                editor.settings.brush_size = size;
+                editor.selection_brush_begin((-3, 0), false, false);
+                let mut expected = vec![false; 150 * 130];
+                let brush = Brush::new(shape, size);
+                let mut last = (-3, 0);
+                for (p, subtract) in [
+                    ((-3, 0), false),
+                    ((145, 125), false),
+                    ((5, 125), false),
+                    ((75, 64), true),
+                    ((-10, 12), true),
+                ] {
+                    editor.sel_brush_subtract = subtract;
+                    editor.selection_brush_stamp(last, p);
+                    let mut stamp = |x, y| {
+                        brush.visit(x, y, |x, y| {
+                            if (0..150).contains(&x) && (0..130).contains(&y) {
+                                expected[(y * 150 + x) as usize] = !subtract;
+                            }
+                        })
+                    };
+                    if size > 1 {
+                        walk_dense_line(last, p, &mut stamp);
+                    } else {
+                        walk_line(last, p, &mut stamp);
+                    }
+                    assert_eq!(editor.sel_brush_mask, expected);
+                    let boundary: Vec<_> = editor
+                        .sel_brush_tiles
+                        .iter()
+                        .flat_map(|tile| tile.boundary.iter().copied())
+                        .collect();
+                    let full = rspaint_core::selection::boundary_segments(&expected, 150, 130);
+                    assert_eq!(unit_edges(&boundary), unit_edges(&full));
+                    last = p;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn filled_tiles_use_one_rectangle_and_unchanged_strokes_keep_the_cache() {
+        let mut editor = Editor::new();
+        editor.load_buffer(PixelBuffer::new(128, 128, Color::WHITE), None);
+        editor.settings.brush_shape = BrushShape::Square;
+        editor.settings.brush_size = 128;
+        editor.selection_brush_begin((63, 63), false, false);
+        for tile in &editor.sel_brush_tiles {
+            assert_eq!(tile.runs.len(), 64);
+            assert_eq!(tile.highlight_rects, vec![tile.bounds]);
+        }
+        let pointers: Vec<_> = editor
+            .sel_brush_tiles
+            .iter()
+            .map(|t| t.highlight_rects.as_ptr())
+            .collect();
+        editor.selection_brush_to((65, 65));
+        editor.selection_brush_to((63, 63));
+        assert_eq!(
+            pointers,
+            editor
+                .sel_brush_tiles
+                .iter()
+                .map(|t| t.highlight_rects.as_ptr())
+                .collect::<Vec<_>>()
+        );
     }
 }

@@ -85,6 +85,23 @@ pub fn draw_line_masked(
     painted: &mut [bool],
     width: u32,
 ) {
+    if brush.blend == BlendMode::Replace && width == buffer.width() {
+        let rgba = color.to_array();
+        let rows = brush_line_spans(buffer.size(), a, b, brush);
+        let data = buffer.data_mut();
+        for (y, spans) in rows {
+            for (left, right) in spans {
+                for x in left..=right {
+                    let index = y * width as usize + x as usize;
+                    if index < painted.len() && !painted[index] {
+                        painted[index] = true;
+                        data[index * 4..index * 4 + 4].copy_from_slice(&rgba);
+                    }
+                }
+            }
+        }
+        return;
+    }
     let mut stamp = |x, y| brush.stamp_masked(buffer, painted, width, x, y, color);
     if brush.size > 1 {
         walk_dense_line(a, b, &mut stamp);
@@ -110,11 +127,109 @@ pub fn erase_line(
     from: Color,
     to: Color,
 ) {
-    if brush.size > 1 {
-        walk_dense_line(a, b, |x, y| brush.replace_in_stamp(buffer, x, y, from, to));
-    } else {
-        walk_line(a, b, |x, y| brush.replace_in_stamp(buffer, x, y, from, to));
+    if from == to {
+        return;
     }
+    let rows = brush_line_spans(buffer.size(), a, b, brush);
+    let stride = buffer.width() as usize * 4;
+    let from = from.to_array();
+    let to = to.to_array();
+    for (y, spans) in rows {
+        for (left, right) in spans {
+            let start = y * stride + left as usize * 4;
+            let end = y * stride + (right as usize + 1) * 4;
+            // Do not detach a shared image when no pixel matches this color.
+            let first = buffer.data()[start..end]
+                .chunks_exact(4)
+                .position(|pixel| pixel == from);
+            if let Some(first) = first {
+                for pixel in buffer.data_mut()[start + first * 4..end].chunks_exact_mut(4) {
+                    if pixel == from {
+                        pixel.copy_from_slice(&to);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Covered rows, each containing disjoint inclusive horizontal spans.
+pub type RowSpans = Vec<(usize, Vec<(i32, i32)>)>;
+
+/// Union the exact footprints into disjoint horizontal spans. Building these
+/// costs path length * brush height, instead of stamping the entire brush area
+/// at each step; each covered pixel is then processed only once.
+pub fn brush_line_spans(
+    [width, height]: [usize; 2],
+    a: Point,
+    b: Point,
+    brush: &Brush,
+) -> RowSpans {
+    let size = brush.size.max(1) as i32;
+    let offset = (size - 1) / 2;
+    let top = (a.1.min(b.1) - offset).max(0);
+    let bottom = (a.1.max(b.1) + size - 1 - offset).min(height as i32 - 1);
+    if top > bottom {
+        return Vec::new();
+    }
+    let mut tip = vec![(i32::MAX, i32::MIN); size as usize];
+    if brush.shape == crate::brush::BrushShape::Square {
+        tip.fill((-offset, size - 1 - offset));
+    } else {
+        brush.visit(0, 0, |x, y| {
+            let span = &mut tip[(y + offset) as usize];
+            span.0 = span.0.min(x);
+            span.1 = span.1.max(x);
+        });
+    }
+    let mut rows = vec![Vec::<(i32, i32)>::new(); (bottom - top + 1) as usize];
+    let mut stamp = |cx: i32, cy: i32| {
+        for (dy, &(left, right)) in tip.iter().enumerate() {
+            let y = cy + dy as i32 - offset;
+            if y < top || y > bottom || left > right {
+                continue;
+            }
+            let left = (cx + left).max(0);
+            let right = (cx + right).min(width as i32 - 1);
+            if left <= right {
+                let row = &mut rows[(y - top) as usize];
+                if let Some(last) = row.last_mut() {
+                    if left <= last.1 + 1 && right >= last.0 - 1 {
+                        last.0 = last.0.min(left);
+                        last.1 = last.1.max(right);
+                        continue;
+                    }
+                }
+                row.push((left, right));
+            }
+        }
+    };
+    if brush.size > 1 {
+        walk_dense_line(a, b, &mut stamp);
+    } else {
+        walk_line(a, b, &mut stamp);
+    }
+    rows.into_iter()
+        .enumerate()
+        .filter_map(|(row, mut spans)| {
+            if spans.is_empty() {
+                return None;
+            }
+            spans.sort_unstable();
+            let mut merged = Vec::new();
+            let mut current = spans[0];
+            for (left, right) in spans.into_iter().skip(1) {
+                if left <= current.1 + 1 {
+                    current.1 = current.1.max(right);
+                } else {
+                    merged.push(current);
+                    current = (left, right);
+                }
+            }
+            merged.push(current);
+            Some((top as usize + row, merged))
+        })
+        .collect()
 }
 
 fn draw_outline(
@@ -497,6 +612,65 @@ mod tests {
         assert_eq!(buffer.get(2, 0), Some(Color::rgb(255, 0, 0)));
         assert_eq!(buffer.get(3, 0), Some(Color::rgb(255, 0, 0)));
         assert_eq!(buffer.get(0, 0), Some(Color::WHITE));
+    }
+
+    #[test]
+    fn swept_eraser_matches_stamping_for_all_shapes_and_clipped_directions() {
+        use crate::brush::BrushShape::*;
+        let mut original = PixelBuffer::new(40, 32, Color::WHITE);
+        let target = Color::rgba(80, 90, 100, 110);
+        let replacement = Color::rgba(10, 20, 30, 0);
+        for y in 0..32 {
+            for x in 0..40 {
+                if (x + y) % 3 != 0 {
+                    original.set(x, y, target);
+                }
+            }
+        }
+        for shape in [Square, Circle, Diagonal, ReverseDiagonal] {
+            for size in [1, 2, 3, 4, 8, 17, 50] {
+                let brush = Brush::new(shape, size).with_blend(BlendMode::Replace);
+                for (a, b) in [
+                    ((-10, -8), (48, 39)),
+                    ((48, 39), (-10, -8)),
+                    ((-4, 28), (39, -5)),
+                    ((10, 25), (10, 2)),
+                    ((37, 15), (1, 15)),
+                    ((18, 16), (18, 16)),
+                    ((-60, -60), (-50, -50)),
+                ] {
+                    let mut expected = original.clone();
+                    let mut stamp =
+                        |x, y| brush.replace_in_stamp(&mut expected, x, y, target, replacement);
+                    if size > 1 {
+                        walk_dense_line(a, b, &mut stamp);
+                    } else {
+                        walk_line(a, b, &mut stamp);
+                    }
+                    let mut actual = original.clone();
+                    erase_line(&mut actual, a, b, &brush, target, replacement);
+                    assert_eq!(actual, expected, "{shape:?}, size {size}, {a:?} -> {b:?}");
+
+                    // Normal erasing must preserve the per-stroke/selection mask,
+                    // including overlaps with earlier segments and partial alpha.
+                    let mut mask: Vec<_> = (0..40 * 32).map(|i| i % 5 == 0).collect();
+                    let mut expected_mask = mask.clone();
+                    let mut expected = original.clone();
+                    let mut stamp = |x, y| {
+                        brush.stamp_masked(&mut expected, &mut expected_mask, 40, x, y, replacement)
+                    };
+                    if size > 1 {
+                        walk_dense_line(a, b, &mut stamp);
+                    } else {
+                        walk_line(a, b, &mut stamp);
+                    }
+                    let mut actual = original.clone();
+                    draw_line_masked(&mut actual, a, b, &brush, replacement, &mut mask, 40);
+                    assert_eq!(actual, expected);
+                    assert_eq!(mask, expected_mask);
+                }
+            }
+        }
     }
 
     #[test]

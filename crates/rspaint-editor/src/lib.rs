@@ -6,7 +6,6 @@ use emath::{self as geometry};
 use rspaint_core::draw::{
     draw_bezier, draw_ellipse, draw_line, draw_line_masked, draw_quadratic_curve, draw_rectangle,
     draw_rounded_rectangle, erase_line, fill_ellipse, fill_rectangle, fill_rounded_rectangle,
-    walk_dense_line, walk_line,
 };
 use rspaint_core::fill::flood_fill;
 use rspaint_core::{
@@ -128,6 +127,10 @@ pub type HighlightRun = (i32, i32, i32);
 /// touches, instead of rescanning the whole canvas on every pointer move.
 #[derive(Default)]
 pub struct SelectionBrushTile {
+    /// Canvas bounds [left, top, right, bottom], exclusive end.
+    pub bounds: [i32; 4],
+    /// Non-overlapping highlight rectangles [left, top, right, bottom], exclusive end.
+    pub highlight_rects: Vec<[i32; 4]>,
     pub boundary: Vec<rspaint_core::selection::BoundarySegment>,
     pub runs: Vec<HighlightRun>,
 }

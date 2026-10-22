@@ -37,6 +37,19 @@ Los módulos separan trazos y formas, texto, selección, pincel de selección,
 transformación de selección, transformaciones de imagen y navegación. Los
 helpers internos se comparten solo dentro del crate.
 
+El pincel de selección usa las franjas de `rspaint-core::draw::brush_line_spans`
+para escribir cada píxel cubierto una sola vez por segmento. Solo recalcula el
+preview de los bloques de 64 × 64 que cambian y sus vecinos, necesarios para los
+bordes. Las filas del resaltado se agrupan en rectángulos sin solapamiento y se
+conservan por bloque. La UI descarta bloques fuera de vista y dibuja el resaltado
+visible en una sola malla, evitando una figura por fila de píxeles seleccionados.
+Pasar por píxeles con el mismo estado no reconstruye el preview.
+
+Para medir un trazo continuo sobre una imagen de 6000 × 4000, ejecutar
+`cargo run --release -p rspaint-editor --example selection_brush_bench`.
+Este ejemplo mide las actualizaciones de CPU y el volumen de geometría del
+resaltado; no incluye el renderizado de la ventana.
+
 ## Presentación y adaptadores
 
 `PaintApp` compone un `Editor` con estado de presentación: diálogos, texturas,

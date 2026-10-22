@@ -248,15 +248,24 @@ pub(super) fn paint_selection_overlay(
     // clipped to the selection, so the real colors show through).
     if show_highlight {
         if let Some(tiles) = app.editor.selection_brush_tiles() {
+            let visible = canvas_rect.intersect(ui.clip_rect());
+            let mut mesh = egui::Mesh::default();
+            let fill = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60);
             for tile in tiles {
-                paint_selection_highlight(
-                    painter,
-                    ui.clip_rect(),
-                    canvas_rect,
-                    magnification,
-                    &tile.runs,
-                    (0, 0),
-                );
+                if !selection_tile_rect(tile.bounds, canvas_rect, magnification).intersects(visible)
+                {
+                    continue;
+                }
+                for &bounds in &tile.highlight_rects {
+                    let rect =
+                        selection_tile_rect(bounds, canvas_rect, magnification).intersect(visible);
+                    if rect.is_positive() {
+                        mesh.add_colored_rect(rect, fill);
+                    }
+                }
+            }
+            if !mesh.is_empty() {
+                painter.add(egui::Shape::mesh(mesh));
             }
         } else if let Some((runs, origin)) = app.editor.selection_runs() {
             paint_selection_highlight(
@@ -275,6 +284,12 @@ pub(super) fn paint_selection_overlay(
         // (static); the existing selection's animated outline is suppressed so
         // no stale edges remain at the intersections.
         for tile in tiles {
+            if !selection_tile_rect(tile.bounds, canvas_rect, magnification)
+                .expand(1.0)
+                .intersects(ui.clip_rect())
+            {
+                continue;
+            }
             paint_mask_boundary(
                 painter,
                 ui.clip_rect(),
@@ -318,6 +333,13 @@ pub(super) fn paint_selection_overlay(
     if drew {
         ui.ctx().request_repaint();
     }
+}
+
+fn selection_tile_rect([x0, y0, x1, y1]: [i32; 4], canvas: egui::Rect, zoom: f32) -> egui::Rect {
+    egui::Rect::from_min_max(
+        canvas.min + egui::vec2(x0 as f32 * zoom, y0 as f32 * zoom),
+        canvas.min + egui::vec2(x1 as f32 * zoom, y1 as f32 * zoom),
+    )
 }
 
 /// Converts a selection outline into screen-space points.
@@ -455,5 +477,48 @@ pub(super) fn paint_ants(painter: &egui::Painter, poly: &[Pos2], phase: f32) {
     let count = poly.len();
     for i in 0..count {
         paint_ant_segment(painter, poly[i], poly[(i + 1) % count], phase);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_brush_highlight_batches_merged_tiles_into_one_mesh() {
+        let ctx = egui::Context::default();
+        let mut app = PaintApp::new_blank(false, false, &ctx);
+        app.editor.load_buffer(
+            rspaint_core::PixelBuffer::new(128, 128, rspaint_core::Color::WHITE),
+            None,
+        );
+        app.editor.settings.brush_shape = rspaint_core::BrushShape::Square;
+        app.editor.settings.brush_size = 128;
+        app.editor.selection_brush_begin((63, 63), false, false);
+        for zoom in [0.125, 1.0, 4.0] {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let canvas = egui::Rect::from_min_size(
+                        ui.min_rect().min,
+                        egui::vec2(128.0, 128.0) * zoom,
+                    );
+                    paint_selection_overlay(&app, ui, canvas, zoom, true);
+                });
+            });
+            let highlights: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::Shape::Mesh(mesh) = &shape.shape {
+                        Some(mesh)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(highlights.len(), 1);
+            assert_eq!(highlights[0].vertices.len(), 16);
+            assert_eq!(highlights[0].indices.len(), 24);
+        }
     }
 }
