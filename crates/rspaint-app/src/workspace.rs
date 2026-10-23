@@ -144,6 +144,8 @@ pub struct Workspace {
     srgb_output: bool,
     next_viewport: u64,
     drag: Option<Drag>,
+    maximized_once: bool,
+    refit_done: bool,
 }
 
 impl Workspace {
@@ -161,6 +163,8 @@ impl Workspace {
             srgb_output,
             next_viewport: 1,
             drag: None,
+            maximized_once: false,
+            refit_done: false,
         }
     }
 
@@ -555,6 +559,15 @@ const TEAR_OFF_DISTANCE: f32 = 20.0;
 
 impl eframe::App for Workspace {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Maximize once, after the first frame has shown the window. Requesting
+        // it at creation is unreliable on Windows (the window is created hidden
+        // and winit applies the flag before it is visible), and the request is
+        // only honored while the window is still shown restored.
+        if !self.maximized_once {
+            self.maximized_once = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        }
+
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::T)) {
             let shared = self.shared.clone();
             self.windows[0].new_tab(ctx, self.has_gpu, self.srgb_output, &shared);
@@ -576,6 +589,22 @@ impl eframe::App for Workspace {
         }
         if let Some((index, pos)) = result.tear {
             self.tear_off(0, index, pos);
+        }
+
+        // The initial zoom fit ran before the window grew, so the picture would
+        // stay small. Once the maximized viewport size is known, fit it to the
+        // window (the canvas was already laid out this frame with the fresh size).
+        if self.maximized_once
+            && !self.refit_done
+            && ctx.input(|i| i.viewport().maximized == Some(true))
+        {
+            self.refit_done = true;
+            let window = &mut self.windows[0];
+            let active = window.active;
+            if let Some(tab) = window.tabs.get_mut(active) {
+                tab.editor.zoom_to_window();
+            }
+            ctx.request_repaint();
         }
 
         // Torn-off windows.
