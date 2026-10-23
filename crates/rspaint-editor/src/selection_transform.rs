@@ -2,19 +2,30 @@ use super::*;
 
 impl Editor {
     pub fn selection_bounds(&self) -> Option<(i32, i32, u32, u32)> {
-        let selection = self.selection.as_ref()?;
-        Some((
-            selection.x,
-            selection.y,
-            selection.pixels.width(),
-            selection.pixels.height(),
-        ))
+        let mut bounds: Option<(i32, i32, i32, i32)> = None;
+        for selection in [self.selection.as_ref(), self.selection_rest.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let x0 = selection.x;
+            let y0 = selection.y;
+            let x1 = x0 + selection.pixels.width() as i32;
+            let y1 = y0 + selection.pixels.height() as i32;
+            bounds = Some(match bounds {
+                Some((min_x, min_y, max_x, max_y)) => {
+                    (min_x.min(x0), min_y.min(y0), max_x.max(x1), max_y.max(y1))
+                }
+                None => (x0, y0, x1, y1),
+            });
+        }
+        bounds.map(|(x0, y0, x1, y1)| (x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
     }
 
     pub fn selection_is_simple_rect(&self) -> bool {
-        self.selection.as_ref().is_some_and(|selection| {
-            selection.outline.is_empty() && selection.mask_bits.iter().all(|&selected| selected)
-        })
+        self.selection_rest.is_none()
+            && self.selection.as_ref().is_some_and(|selection| {
+                selection.outline.is_empty() && selection.mask_bits.iter().all(|&selected| selected)
+            })
     }
 
     pub fn resizing_selection(&self) -> bool {

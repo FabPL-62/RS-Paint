@@ -333,6 +333,11 @@ pub struct Editor {
     pub pan: geometry::Vec2,
     pub file_path: Option<std::path::PathBuf>,
     pub selection: Option<Selection>,
+    /// The other selected areas while one of them is being moved on its own.
+    /// They are merged back into `selection` when the drag ends.
+    selection_rest: Option<Selection>,
+    /// Whether the current selection drag also moves the pixels underneath.
+    selection_drag_moves_content: bool,
     creating_selection: Option<CreatingSelection>,
     creating_selection_add: bool,
     creating_selection_subtract: bool,
@@ -511,6 +516,8 @@ impl Editor {
             pan: geometry::Vec2::ZERO,
             file_path: None,
             selection: None,
+            selection_rest: None,
+            selection_drag_moves_content: true,
             creating_selection: None,
             creating_selection_add: false,
             creating_selection_subtract: false,

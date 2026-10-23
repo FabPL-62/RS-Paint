@@ -67,9 +67,12 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         cursor_pos.and_then(|pos| hovered_resize_handle(canvas_rect, pos))
     };
     // While drawing is clipped to the selection, hide the transform box and
-    // rotation gizmo (only the marching ants remain).
+    // rotation gizmo (only the marching ants remain). The transform controls
+    // are shown while Ctrl is held; without it a selection only shows its area.
     let clipping = app.editor.clipping_to_selection();
-    let selection_box = if clipping {
+    let ctrl = ui.input(|i| i.modifiers.command);
+    let show_transform = ctrl && !clipping && app.editor.settings.tool.is_selection();
+    let selection_box = if !show_transform {
         None
     } else {
         app.editor.selection_bounds().map(|(x, y, w, h)| {
@@ -79,13 +82,13 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
             )
         })
     };
-    let selection_handle = if clipping || occluded {
+    let selection_handle = if !show_transform || occluded {
         None
     } else {
         cursor_pos.and_then(|pos| selection_box.and_then(|rect| hovered_box_handle(rect, pos)))
     };
     // The rotation pivot (cross) and its handle (line + circle).
-    let pivot_screen = if clipping {
+    let pivot_screen = if !show_transform {
         None
     } else {
         app.editor.selection_pivot().map(|pivot| {
@@ -141,10 +144,12 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
         viewport_rect,
         magnification,
     );
-    let resizing_selection =
-        !resizing && handle_selection_resize(app, ui, &response, canvas_rect, magnification);
+    let resizing_selection = !resizing
+        && (show_transform || app.editor.resizing_selection())
+        && handle_selection_resize(app, ui, &response, canvas_rect, magnification);
     let rotating = !resizing
         && !resizing_selection
+        && (show_transform || app.editor.rotating_selection() || app.editor.pivot_dragging())
         && handle_selection_rotation(app, ui, &response, canvas_rect, magnification);
     if resizing || resizing_selection || rotating {
         // The transform gizmo owns the input this frame.

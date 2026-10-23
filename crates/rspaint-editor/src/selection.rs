@@ -1,27 +1,56 @@
 use super::*;
 
+fn outline_of(selection: &Selection) -> Option<SelectionOutline> {
+    if selection.mask {
+        return None;
+    }
+    if selection.outline.is_empty() {
+        Some(SelectionOutline::Rect {
+            x: selection.x,
+            y: selection.y,
+            width: selection.pixels.width(),
+            height: selection.pixels.height(),
+        })
+    } else {
+        Some(SelectionOutline::Poly(
+            selection
+                .outline
+                .iter()
+                .map(|&(ox, oy)| (selection.x + ox, selection.y + oy))
+                .collect(),
+        ))
+    }
+}
+
+fn mask_contains(mask_bits: &[bool], width: u32, height: u32, x: i32, y: i32) -> bool {
+    if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
+        return false;
+    }
+    mask_bits
+        .get((y as u32 * width + x as u32) as usize)
+        .copied()
+        .unwrap_or(true)
+}
+
+fn point_in_selection_part(selection: &Selection, p: (i32, i32)) -> bool {
+    let lx = (p.0 as i64) - (selection.x as i64);
+    let ly = (p.1 as i64) - (selection.y as i64);
+    let width = selection.pixels.width() as i64;
+    let height = selection.pixels.height() as i64;
+    if lx < 0 || ly < 0 || lx >= width || ly >= height {
+        return false;
+    }
+    let index = (ly * width + lx) as usize;
+    selection.mask_bits.get(index).copied().unwrap_or(true)
+}
+
 impl Editor {
     pub fn selection_outline(&self) -> Option<SelectionOutline> {
-        let selection = self.selection.as_ref()?;
-        if selection.mask {
-            return None;
-        }
-        if selection.outline.is_empty() {
-            Some(SelectionOutline::Rect {
-                x: selection.x,
-                y: selection.y,
-                width: selection.pixels.width(),
-                height: selection.pixels.height(),
-            })
-        } else {
-            Some(SelectionOutline::Poly(
-                selection
-                    .outline
-                    .iter()
-                    .map(|&(ox, oy)| (selection.x + ox, selection.y + oy))
-                    .collect(),
-            ))
-        }
+        outline_of(self.selection.as_ref()?)
+    }
+
+    pub fn selection_rest_outline(&self) -> Option<SelectionOutline> {
+        outline_of(self.selection_rest.as_ref()?)
     }
 
     pub fn creating_outline(&self) -> Option<SelectionOutline> {
@@ -44,6 +73,15 @@ impl Editor {
         &self,
     ) -> Option<(&[rspaint_core::selection::BoundarySegment], (i32, i32))> {
         let selection = self.selection.as_ref()?;
+        selection
+            .mask
+            .then_some((selection.boundary.as_slice(), (selection.x, selection.y)))
+    }
+
+    pub fn selection_rest_boundary(
+        &self,
+    ) -> Option<(&[rspaint_core::selection::BoundarySegment], (i32, i32))> {
+        let selection = self.selection_rest.as_ref()?;
         selection
             .mask
             .then_some((selection.boundary.as_slice(), (selection.x, selection.y)))
@@ -289,18 +327,60 @@ impl Editor {
     }
 
     pub fn point_in_selection(&self, p: (i32, i32)) -> bool {
-        let Some(selection) = self.selection.as_ref() else {
-            return false;
-        };
-        let lx = (p.0 as i64) - (selection.x as i64);
-        let ly = (p.1 as i64) - (selection.y as i64);
-        let width = selection.pixels.width() as i64;
-        let height = selection.pixels.height() as i64;
-        if lx < 0 || ly < 0 || lx >= width || ly >= height {
-            return false;
+        [self.selection.as_ref(), self.selection_rest.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|selection| point_in_selection_part(selection, p))
+    }
+
+    /// The size of the selected connected area under `p`, if any.
+    ///
+    /// A single rectangular or lasso selection reports its whole bounding
+    /// box; masks with several disconnected areas report only the area under
+    /// the pointer.
+    pub fn selection_portion_size(&self, p: (i32, i32)) -> Option<(u32, u32)> {
+        for selection in [self.selection.as_ref(), self.selection_rest.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if !point_in_selection_part(selection, p) {
+                continue;
+            }
+            let width = selection.pixels.width();
+            let height = selection.pixels.height();
+            if !selection.mask || selection.mask_bits.iter().all(|&selected| selected) {
+                return Some((width, height));
+            }
+            let local_x = p.0 - selection.x;
+            let local_y = p.1 - selection.y;
+            let mut visited = vec![false; (width * height) as usize];
+            let mut stack = vec![(local_x, local_y)];
+            let (mut min_x, mut min_y) = (i32::MAX, i32::MAX);
+            let (mut max_x, mut max_y) = (i32::MIN, i32::MIN);
+            while let Some((x, y)) = stack.pop() {
+                if !mask_contains(&selection.mask_bits, width, height, x, y) {
+                    continue;
+                }
+                let index = (y as u32 * width + x as u32) as usize;
+                if visited[index] {
+                    continue;
+                }
+                visited[index] = true;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+                stack.push((x + 1, y));
+                stack.push((x - 1, y));
+                stack.push((x, y + 1));
+                stack.push((x, y - 1));
+            }
+            if max_x < min_x || max_y < min_y {
+                return None;
+            }
+            return Some(((max_x - min_x + 1) as u32, (max_y - min_y + 1) as u32));
         }
-        let index = (ly * width + lx) as usize;
-        selection.mask_bits.get(index).copied().unwrap_or(true)
+        None
     }
 
     pub(super) fn selection_fill(&self) -> Color {
@@ -309,10 +389,17 @@ impl Editor {
         self.colors.background
     }
 
-    pub fn begin_selection_drag(&mut self, p: (i32, i32), tool: Tool, add: bool, subtract: bool) {
+    pub fn begin_selection_drag(
+        &mut self,
+        p: (i32, i32),
+        tool: Tool,
+        add: bool,
+        subtract: bool,
+        move_content: bool,
+    ) {
         let combining = add || subtract;
         if !combining && self.point_in_selection(p) {
-            self.start_moving_selection(p);
+            self.start_moving_selection(p, move_content);
             return;
         }
         self.creating_selection_add = add;
@@ -333,25 +420,9 @@ impl Editor {
                 .as_ref()
                 .map(|s| s.drag_offset)
                 .unwrap_or((0, 0));
-            // Snapshot once at the start of the move so Ctrl+Z can undo just
-            // the move while keeping the selection.
-            if self.selection.as_ref().is_some_and(|s| !s.moved) {
-                // Snapshot the pre-move state: not floating, so it is
-                // consistent with the unchanged canvas.
-                let mut snapshot = self.selection.clone();
-                if let Some(selection) = snapshot.as_mut() {
-                    selection.dragging = false;
-                    selection.floating = false;
-                    selection.base = None;
-                }
-                self.selection_undo.push((
-                    snapshot,
-                    self.document.buffer.clone(),
-                    self.selection_pivot,
-                ));
-            }
-            if let Some(selection) = self.selection.as_mut() {
-                selection.moved = true;
+            if !self.selection_drag_moves_content {
+                self.move_selection_area_to(p.0 - offset.0, p.1 - offset.1);
+                return;
             }
             self.move_selection_to(p.0 - offset.0, p.1 - offset.1);
             return;
@@ -371,8 +442,20 @@ impl Editor {
     }
 
     pub fn end_selection_drag(&mut self) {
+        let area_only = self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.dragging)
+            && !self.selection_drag_moves_content;
         if let Some(selection) = self.selection.as_mut() {
             selection.dragging = false;
+        }
+        // The independently moved area rejoins the other selected areas.
+        if area_only {
+            self.merge_selection_rest(false);
+            self.refresh_selection_content_from_canvas();
+        } else {
+            self.merge_selection_rest(true);
         }
         if self.creating_selection.is_some() {
             self.finish_creating_selection();
@@ -384,30 +467,311 @@ impl Editor {
         }
     }
 
-    pub(super) fn start_moving_selection(&mut self, p: (i32, i32)) {
+    /// Splits the connected area under `p` out of the selection so it can be
+    /// moved independently. Returns whether a split happened.
+    fn split_selection_component(&mut self, p: (i32, i32), lift_content: bool) -> bool {
+        let Some(selection) = self.selection.as_ref() else {
+            return false;
+        };
+        let width = selection.pixels.width();
+        let height = selection.pixels.height();
+        let local_x = p.0 - selection.x;
+        let local_y = p.1 - selection.y;
+        if local_x < 0 || local_y < 0 || local_x as u32 >= width || local_y as u32 >= height {
+            return false;
+        }
+        if !mask_contains(&selection.mask_bits, width, height, local_x, local_y) {
+            return false;
+        }
+
+        let total = (0..height as i32)
+            .flat_map(|y| (0..width as i32).map(move |x| (x, y)))
+            .filter(|&(x, y)| mask_contains(&selection.mask_bits, width, height, x, y))
+            .count();
+        let mut component = vec![false; (width * height) as usize];
+        let mut stack = vec![(local_x, local_y)];
+        let mut count = 0usize;
+        while let Some((x, y)) = stack.pop() {
+            if !mask_contains(&selection.mask_bits, width, height, x, y) {
+                continue;
+            }
+            let index = (y as u32 * width + x as u32) as usize;
+            if component[index] {
+                continue;
+            }
+            component[index] = true;
+            count += 1;
+            stack.push((x + 1, y));
+            stack.push((x - 1, y));
+            stack.push((x, y + 1));
+            stack.push((x, y - 1));
+        }
+        if count == total {
+            return false;
+        }
+
+        let selection = self.selection.take().expect("checked above");
+
         let fill = self.selection_fill();
         let background = if self.settings.selection_transparent {
             Some(self.colors.background)
         } else {
             None
         };
-        let Some(selection) = self.selection.as_mut() else {
-            return;
-        };
-        selection.dragging = true;
-        selection.drag_offset = (p.0 - selection.x, p.1 - selection.y);
-        if !selection.floating {
+
+        let mut moving = selection.clone();
+        let mut rest = selection.clone();
+        let mut moving_pixels = PixelBuffer::transparent(width, height);
+        let mut rest_pixels = PixelBuffer::transparent(width, height);
+        let mut rest_mask = vec![false; (width * height) as usize];
+        for y in 0..height as i32 {
+            for x in 0..width as i32 {
+                if !mask_contains(&selection.mask_bits, width, height, x, y) {
+                    continue;
+                }
+                let index = (y as u32 * width + x as u32) as usize;
+                let color = selection
+                    .pixels
+                    .get(x as u32, y as u32)
+                    .unwrap_or(Color::TRANSPARENT);
+                if component[index] {
+                    moving_pixels.set(x as u32, y as u32, color);
+                } else {
+                    rest_pixels.set(x as u32, y as u32, color);
+                    rest_mask[index] = true;
+                }
+            }
+        }
+
+        moving.pixels = moving_pixels;
+        moving.mask_bits = component.clone();
+        moving.outline = Vec::new();
+        moving.mask = !component.iter().all(|&selected| selected);
+        moving.boundary = rspaint_core::selection::boundary_segments(&component, width, height);
+        moving.runs = runs_from_mask(&component, width, height);
+        moving.dragging = false;
+        moving.drag_offset = (0, 0);
+        moving.rotation_origin = None;
+        moving.rotation = 0.0;
+
+        rest.pixels = rest_pixels;
+        rest.mask_bits = rest_mask;
+        rest.outline = Vec::new();
+        rest.mask = !rest.mask_bits.iter().all(|&selected| selected);
+        rest.boundary = rspaint_core::selection::boundary_segments(&rest.mask_bits, width, height);
+        rest.runs = runs_from_mask(&rest.mask_bits, width, height);
+        rest.dragging = false;
+        rest.drag_offset = (0, 0);
+        rest.rotation_origin = None;
+        rest.rotation = 0.0;
+
+        // When the selection was already floating, keep the other areas on the
+        // canvas as the moving area is lifted out.
+        if lift_content && moving.floating {
+            rspaint_core::selection::stamp(
+                &mut self.document.buffer,
+                &rest.pixels,
+                rest.x,
+                rest.y,
+                background,
+            );
             let mut base = self.document.buffer.clone();
             rspaint_core::selection::clear_masked(
                 &mut base,
-                &selection.pixels,
-                selection.x,
-                selection.y,
+                &moving.pixels,
+                moving.x,
+                moving.y,
                 background,
                 fill,
             );
-            selection.base = Some(base);
-            selection.floating = true;
+            moving.base = Some(base);
+            self.mark_full();
+        }
+
+        self.selection = Some(moving);
+        self.selection_rest = Some(rest);
+        true
+    }
+
+    /// Merges the other selected areas back into the moving selection.
+    fn merge_selection_rest(&mut self, lift_content: bool) {
+        let Some(rest) = self.selection_rest.take() else {
+            return;
+        };
+        let Some(active) = self.selection.take() else {
+            self.selection = Some(rest);
+            return;
+        };
+        let fill = self.selection_fill();
+        let background = if self.settings.selection_transparent {
+            Some(self.colors.background)
+        } else {
+            None
+        };
+        let mut merged = merge_selections(rest, active);
+        if lift_content {
+            if merged.floating {
+                let mut base = self.document.buffer.clone();
+                rspaint_core::selection::clear_masked(
+                    &mut base,
+                    &merged.pixels,
+                    merged.x,
+                    merged.y,
+                    background,
+                    fill,
+                );
+                let mut buffer = base.clone();
+                rspaint_core::selection::stamp(
+                    &mut buffer,
+                    &merged.pixels,
+                    merged.x,
+                    merged.y,
+                    background,
+                );
+                self.document.buffer = buffer;
+                merged.base = Some(base);
+            }
+        } else {
+            merged.floating = false;
+            merged.base = None;
+            merged.moved = false;
+            merged.rotation_origin = None;
+            merged.rotation = 0.0;
+        }
+        self.selection = Some(merged);
+        if lift_content {
+            self.mark_full();
+        } else {
+            self.refresh_selection_content_from_canvas();
+        }
+    }
+
+    /// Re-reads the content under the current selection area from the canvas,
+    /// used after moving only the selection outline.
+    fn refresh_selection_content_from_canvas(&mut self) {
+        let Some(selection) = self.selection.as_ref() else {
+            return;
+        };
+        let width = selection.pixels.width();
+        let height = selection.pixels.height();
+        let mask_bits = selection.mask_bits.clone();
+        let (x, y) = (selection.x, selection.y);
+        let mut pixels = PixelBuffer::transparent(width, height);
+        for ly in 0..height as i32 {
+            for lx in 0..width as i32 {
+                if !mask_contains(&mask_bits, width, height, lx, ly) {
+                    continue;
+                }
+                let cx = x + lx;
+                let cy = y + ly;
+                if cx >= 0 && cy >= 0 {
+                    if let Some(color) = self.document.buffer.get(cx as u32, cy as u32) {
+                        pixels.set(lx as u32, ly as u32, color);
+                    }
+                }
+            }
+        }
+        if let Some(selection) = self.selection.as_mut() {
+            selection.pixels = pixels;
+            selection.floating = false;
+            selection.base = None;
+            selection.moved = false;
+            selection.dragging = false;
+            selection.rotation_origin = None;
+            selection.rotation = 0.0;
+        }
+    }
+
+    pub(super) fn start_moving_selection(&mut self, p: (i32, i32), move_content: bool) {
+        self.selection_drag_moves_content = move_content;
+        if move_content {
+            // Snapshot the pre-move state so Ctrl+Z can undo just the move
+            // while keeping the selection and every selected area.
+            if self
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.moved)
+            {
+                let snapshot = self.selection.clone();
+                self.selection_undo.push((
+                    snapshot,
+                    self.document.buffer.clone(),
+                    self.selection_pivot,
+                ));
+            }
+            // Ctrl moves the whole selection, including every disconnected
+            // area. Only the outline-only drag (without Ctrl) splits a single
+            // connected area out of a multiselection.
+            let fill = self.selection_fill();
+            let background = if self.settings.selection_transparent {
+                Some(self.colors.background)
+            } else {
+                None
+            };
+            let Some(selection) = self.selection.as_mut() else {
+                return;
+            };
+            selection.dragging = true;
+            selection.drag_offset = (p.0 - selection.x, p.1 - selection.y);
+            selection.moved = true;
+            if !selection.floating {
+                let mut base = self.document.buffer.clone();
+                rspaint_core::selection::clear_masked(
+                    &mut base,
+                    &selection.pixels,
+                    selection.x,
+                    selection.y,
+                    background,
+                    fill,
+                );
+                selection.base = Some(base);
+                selection.floating = true;
+            }
+        } else {
+            // Moving only the outline: persist any floating content first so
+            // the pixels stay where they are.
+            if self
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.floating)
+            {
+                self.settle_selection();
+            }
+            if let Some(selection) = self.selection.as_ref() {
+                self.selection_undo.push((
+                    Some(selection.clone()),
+                    self.document.buffer.clone(),
+                    self.selection_pivot,
+                ));
+            }
+            self.split_selection_component(p, false);
+            if let Some(selection) = self.selection.as_mut() {
+                selection.dragging = true;
+                selection.drag_offset = (p.0 - selection.x, p.1 - selection.y);
+                selection.rotation_origin = None;
+                selection.rotation = 0.0;
+            }
+        }
+    }
+
+    /// Moves only the selection outline, leaving the canvas untouched.
+    pub(super) fn move_selection_area_to(&mut self, new_x: i32, new_y: i32) {
+        let (dx, dy) = self
+            .selection
+            .as_ref()
+            .map(|selection| (new_x - selection.x, new_y - selection.y))
+            .unwrap_or((0, 0));
+        if let Some(pivot) = self.selection_pivot.as_mut() {
+            pivot.0 += dx as f32;
+            pivot.1 += dy as f32;
+        }
+        if let Some(selection) = self.selection.as_mut() {
+            if let Some((_, _, origin_x, origin_y)) = selection.rotation_origin.as_mut() {
+                *origin_x += dx;
+                *origin_y += dy;
+            }
+            selection.x = new_x;
+            selection.y = new_y;
         }
     }
 
@@ -528,17 +892,17 @@ impl Editor {
             }
             CreatingSelection::Lasso { points } => {
                 rspaint_core::selection::extract_lasso(&self.document.buffer, &points).map(
-                    |(pixels, (x, y), mask_bits)| {
-                        let outline = points.iter().map(|&(px, py)| (px - x, py - y)).collect();
-                        NewRegion {
-                            pixels,
-                            x,
-                            y,
-                            mask_bits,
-                            outline,
-                            mask: false,
-                            name: "Free-Form Select",
-                        }
+                    |(pixels, (x, y), mask_bits)| NewRegion {
+                        pixels,
+                        x,
+                        y,
+                        mask_bits,
+                        // Draw the ants on the actual selected pixels. The raw
+                        // pointer path can differ from the rasterized mask and
+                        // leave the closing segment outside the selection.
+                        outline: Vec::new(),
+                        mask: true,
+                        name: "Free-Form Select",
                     },
                 )
             }
@@ -552,6 +916,7 @@ impl Editor {
     pub fn deselect(&mut self) {
         self.creating_selection = None;
         self.creating_selection_add = false;
+        self.merge_selection_rest(self.selection_drag_moves_content);
         if let Some(selection) = self.selection.take() {
             if selection.floating && selection.moved {
                 self.commit(selection.name);
@@ -565,6 +930,7 @@ impl Editor {
     }
 
     pub(super) fn settle_selection(&mut self) {
+        self.merge_selection_rest(self.selection_drag_moves_content);
         let commit_name = self.selection.as_ref().and_then(|selection| {
             (selection.floating && selection.moved).then_some(selection.name)
         });

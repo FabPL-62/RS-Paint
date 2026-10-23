@@ -11,7 +11,7 @@ pub(super) fn paint_resize_handles(
     painter.rect_stroke(
         canvas_rect,
         0.0,
-        egui::Stroke::new(1.5, blue),
+        egui::Stroke::new(1.5_f32, blue),
         egui::StrokeKind::Outside,
     );
     for handle in ResizeHandle::ALL {
@@ -46,7 +46,7 @@ pub(super) fn paint_selection_box(
             painter.rect_stroke(
                 rect,
                 0.0,
-                egui::Stroke::new(1.0, egui::Color32::BLACK),
+                egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
                 egui::StrokeKind::Inside,
             );
         }
@@ -73,7 +73,7 @@ pub(super) fn paint_selection_box(
             painter.rect_stroke(
                 rect,
                 0.0,
-                egui::Stroke::new(1.0, egui::Color32::BLACK),
+                egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
                 egui::StrokeKind::Inside,
             );
         }
@@ -91,7 +91,7 @@ pub(super) fn paint_selection_rotation(
     circle_hovered: bool,
 ) {
     let painter = ui.painter();
-    let black = egui::Stroke::new(1.0, egui::Color32::BLACK);
+    let black = egui::Stroke::new(1.0_f32, egui::Color32::BLACK);
     painter.line_segment([pivot, handle], black);
     let fill = if circle_hovered {
         egui::Color32::from_gray(150)
@@ -176,7 +176,7 @@ pub(super) fn paint_text_overlay(
     ui.painter().rect_stroke(
         rect,
         0.0,
-        egui::Stroke::new(1.0, egui::Color32::from_gray(128)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(128)),
         egui::StrokeKind::Outside,
     );
 
@@ -188,7 +188,7 @@ pub(super) fn paint_text_overlay(
             let p1 = min + egui::vec2(b.0 * magnification, b.1 * magnification);
             ui.painter().line_segment(
                 [p0, p1],
-                egui::Stroke::new(1.0, to_color32(app.editor.colors.foreground)),
+                egui::Stroke::new(1.0_f32, to_color32(app.editor.colors.foreground)),
             );
         }
     }
@@ -221,8 +221,8 @@ pub(super) fn paint_polygon_overlay(
     if let Some(preview) = app.editor.polygon_preview() {
         poly.push(to_screen(preview));
     }
-    let black = egui::Stroke::new(1.0, egui::Color32::BLACK);
-    let white = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    let black = egui::Stroke::new(1.0_f32, egui::Color32::BLACK);
+    let white = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
     let painter = ui.painter();
     for pair in poly.windows(2) {
         let offset = egui::vec2(1.0, 1.0);
@@ -267,15 +267,23 @@ pub(super) fn paint_selection_overlay(
             if !mesh.is_empty() {
                 painter.add(egui::Shape::mesh(mesh));
             }
-        } else if let Some((runs, origin)) = app.editor.selection_runs() {
-            paint_selection_highlight(
-                painter,
-                ui.clip_rect(),
-                canvas_rect,
-                magnification,
-                runs,
-                origin,
-            );
+        } else {
+            for (runs, origin) in [
+                app.editor.selection_runs(),
+                app.editor.selection_rest_runs(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                paint_selection_highlight(
+                    painter,
+                    ui.clip_rect(),
+                    canvas_rect,
+                    magnification,
+                    runs,
+                    origin,
+                );
+            }
         }
     }
 
@@ -302,7 +310,13 @@ pub(super) fn paint_selection_overlay(
         }
     } else {
         // The active selection (mask boundary or rect/lasso outline)...
-        if let Some((segments, origin)) = app.editor.selection_boundary() {
+        for (segments, origin) in [
+            app.editor.selection_boundary(),
+            app.editor.selection_rest_boundary(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             paint_mask_boundary(
                 painter,
                 ui.clip_rect(),
@@ -317,6 +331,7 @@ pub(super) fn paint_selection_overlay(
         // ...plus the in-progress selection (visible while accumulating).
         for outline in [
             app.editor.selection_outline(),
+            app.editor.selection_rest_outline(),
             app.editor.creating_outline(),
         ]
         .into_iter()
@@ -445,8 +460,8 @@ pub(super) fn paint_ant_segment(painter: &egui::Painter, a: Pos2, b: Pos2, phase
     if delta.length() <= 0.0 {
         return;
     }
-    let black = egui::Stroke::new(1.0, egui::Color32::BLACK);
-    let white = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    let black = egui::Stroke::new(1.0_f32, egui::Color32::BLACK);
+    let white = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
     let horizontal = delta.x.abs() >= delta.y.abs();
     let (lo, hi, fixed) = if horizontal {
         (a.x.min(b.x), a.x.max(b.x), a.y)

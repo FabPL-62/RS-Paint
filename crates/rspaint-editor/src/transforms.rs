@@ -6,6 +6,8 @@ impl Editor {
         self.stroke = None;
         self.stroke_painted.clear();
         self.selection = None;
+        self.selection_rest = None;
+        self.selection_drag_moves_content = true;
         self.creating_selection = None;
         self.creating_selection_add = false;
         self.creating_selection_subtract = false;

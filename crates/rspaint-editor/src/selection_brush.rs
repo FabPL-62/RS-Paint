@@ -228,6 +228,11 @@ impl Editor {
         let selection = self.selection.as_ref()?;
         Some((selection.runs.as_slice(), (selection.x, selection.y)))
     }
+
+    pub fn selection_rest_runs(&self) -> Option<(&[HighlightRun], (i32, i32))> {
+        let selection = self.selection_rest.as_ref()?;
+        Some((selection.runs.as_slice(), (selection.x, selection.y)))
+    }
 }
 
 /// Merge consecutive equal horizontal spans into non-overlapping rectangles.

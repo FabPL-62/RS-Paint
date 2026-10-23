@@ -327,7 +327,8 @@ pub(super) fn handle_selection(
     to_canvas: &impl Fn(Pos2) -> (i32, i32),
 ) {
     let tool = app.editor.settings.tool;
-    let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+    let (shift, alt, ctrl) =
+        ui.input(|i| (i.modifiers.shift, i.modifiers.alt, i.modifiers.command));
     let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
 
     if response.drag_started() {
@@ -347,6 +348,7 @@ pub(super) fn handle_selection(
                         tool,
                         shift && !secondary,
                         alt || right_subtract,
+                        ctrl && primary,
                     );
                 }
             }
@@ -397,6 +399,7 @@ pub(super) fn handle_magic_wand(
     to_canvas: &impl Fn(Pos2) -> (i32, i32),
 ) {
     let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
+    let ctrl = ui.input(|i| i.modifiers.command);
     if response.drag_started() && ui.input(|i| i.pointer.primary_down()) {
         let origin = ui
             .input(|i| i.pointer.press_origin())
@@ -404,7 +407,7 @@ pub(super) fn handle_magic_wand(
         if let Some(pos) = origin {
             if on_canvas(pos) && app.editor.point_in_selection(to_canvas(pos)) {
                 app.editor
-                    .begin_selection_drag(to_canvas(pos), Tool::Select, false, false);
+                    .begin_selection_drag(to_canvas(pos), Tool::Select, false, false, ctrl);
             }
         }
     }
@@ -449,7 +452,8 @@ pub(super) fn handle_selection_brush(
     canvas_rect: egui::Rect,
     to_canvas: &impl Fn(Pos2) -> (i32, i32),
 ) {
-    let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+    let (shift, alt, ctrl) =
+        ui.input(|i| (i.modifiers.shift, i.modifiers.alt, i.modifiers.command));
     let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
 
     if response.drag_started() {
@@ -466,7 +470,7 @@ pub(super) fn handle_selection_brush(
                     // Plain left press inside the selection moves it; otherwise paint.
                     if !secondary && !alt && !shift && app.editor.point_in_selection(p) {
                         app.editor
-                            .begin_selection_drag(p, Tool::Select, false, false);
+                            .begin_selection_drag(p, Tool::Select, false, false, ctrl);
                     } else {
                         app.editor.selection_brush_begin(p, secondary || alt, shift);
                     }

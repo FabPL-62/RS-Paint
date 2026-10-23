@@ -67,7 +67,7 @@ fn captured_palette_retains_all_colors_beyond_two_rows_and_reset_is_independent(
 
 fn select(editor: &mut Editor, start: (i32, i32), end: (i32, i32)) {
     editor.set_tool(Tool::Select);
-    editor.begin_selection_drag(start, Tool::Select, false, false);
+    editor.begin_selection_drag(start, Tool::Select, false, false, false);
     editor.update_selection_drag(end);
     editor.end_selection_drag();
 }
@@ -109,6 +109,120 @@ fn selection_clips_drawing_without_losing_the_selection() {
         };
         assert_eq!(e.document.buffer.get(x, 4), Some(expected), "pixel {x}");
     }
+}
+
+#[test]
+fn dragging_selection_without_ctrl_moves_only_the_outline() {
+    let mut e = editor();
+    e.document.buffer.set(2, 2, Color::BLACK);
+    select(&mut e, (2, 2), (3, 3));
+
+    e.begin_selection_drag((2, 2), Tool::Select, false, false, false);
+    e.update_selection_drag((2, 5));
+    e.end_selection_drag();
+
+    assert_eq!(e.document.buffer.get(2, 2), Some(Color::BLACK));
+    assert_eq!(e.document.buffer.get(2, 5), Some(Color::WHITE));
+    assert!(!e.point_in_selection((2, 2)));
+    assert!(e.point_in_selection((2, 5)));
+}
+
+#[test]
+fn ctrl_drag_moves_the_whole_multiselection() {
+    let mut e = editor();
+    e.document.buffer.set(1, 1, Color::BLACK);
+    e.document.buffer.set(8, 1, Color::BLACK);
+    select(&mut e, (1, 1), (2, 2));
+    e.begin_selection_drag((8, 1), Tool::Select, true, false, false);
+    e.update_selection_drag((9, 2));
+    e.end_selection_drag();
+
+    e.begin_selection_drag((1, 1), Tool::Select, false, false, true);
+    e.update_selection_drag((1, 5));
+    e.end_selection_drag();
+
+    assert_eq!(e.document.buffer.get(1, 1), Some(Color::WHITE));
+    assert_eq!(e.document.buffer.get(8, 1), Some(Color::WHITE));
+    assert_eq!(e.document.buffer.get(1, 5), Some(Color::BLACK));
+    assert_eq!(e.document.buffer.get(8, 5), Some(Color::BLACK));
+}
+
+#[test]
+fn ctrl_drag_keeps_a_floating_multiselection_together() {
+    let mut e = editor();
+    e.document.buffer.set(1, 1, Color::BLACK);
+    e.document.buffer.set(8, 1, Color::BLACK);
+    select(&mut e, (1, 1), (2, 2));
+    e.begin_selection_drag((8, 1), Tool::Select, true, false, false);
+    e.update_selection_drag((9, 2));
+    e.end_selection_drag();
+
+    e.begin_selection_drag((1, 1), Tool::Select, false, false, true);
+    e.update_selection_drag((1, 3));
+    e.end_selection_drag();
+    assert_eq!(e.document.buffer.get(1, 3), Some(Color::BLACK));
+    assert_eq!(e.document.buffer.get(8, 3), Some(Color::BLACK));
+
+    e.begin_selection_drag((1, 3), Tool::Select, false, false, true);
+    e.update_selection_drag((1, 5));
+    e.end_selection_drag();
+
+    assert_eq!(e.document.buffer.get(1, 3), Some(Color::WHITE));
+    assert_eq!(e.document.buffer.get(8, 3), Some(Color::WHITE));
+    assert_eq!(e.document.buffer.get(1, 5), Some(Color::BLACK));
+    assert_eq!(e.document.buffer.get(8, 5), Some(Color::BLACK));
+}
+
+#[test]
+fn dragging_one_area_without_ctrl_keeps_every_pixel_in_place() {
+    let mut e = editor();
+    e.document.buffer.set(1, 1, Color::BLACK);
+    e.document.buffer.set(8, 1, Color::BLACK);
+    select(&mut e, (1, 1), (2, 2));
+    e.begin_selection_drag((8, 1), Tool::Select, true, false, false);
+    e.update_selection_drag((9, 2));
+    e.end_selection_drag();
+
+    e.begin_selection_drag((1, 1), Tool::Select, false, false, false);
+    e.update_selection_drag((1, 5));
+    e.end_selection_drag();
+
+    assert_eq!(e.document.buffer.get(1, 1), Some(Color::BLACK));
+    assert_eq!(e.document.buffer.get(8, 1), Some(Color::BLACK));
+    assert!(!e.point_in_selection((1, 1)));
+    assert!(e.point_in_selection((1, 5)));
+    assert!(e.point_in_selection((8, 1)));
+}
+
+#[test]
+fn hovering_a_disconnected_selection_reports_only_that_area_size() {
+    let mut e = editor();
+    select(&mut e, (1, 1), (2, 2));
+    e.begin_selection_drag((8, 4), Tool::Select, true, false, false);
+    e.update_selection_drag((10, 6));
+    e.end_selection_drag();
+
+    assert_eq!(e.selection_portion_size((1, 1)), Some((2, 2)));
+    assert_eq!(e.selection_portion_size((9, 5)), Some((3, 3)));
+    assert_eq!(e.selection_portion_size((5, 5)), None);
+    assert_eq!(e.selection_bounds(), Some((1, 1, 10, 6)));
+}
+
+#[test]
+fn free_form_selection_traces_the_selected_pixels() {
+    let mut e = editor();
+    e.set_tool(Tool::FreeFormSelect);
+    e.begin_selection_drag((2, 2), Tool::FreeFormSelect, false, false, false);
+    e.update_selection_drag((10, 2));
+    e.update_selection_drag((10, 10));
+    e.update_selection_drag((2, 10));
+    e.update_selection_drag((2, 2));
+    e.end_selection_drag();
+
+    assert!(e.selection_outline().is_none());
+    assert!(e.selection_boundary().is_some());
+    assert_eq!(e.selection_bounds().unwrap().2, 9);
+    assert_eq!(e.selection_bounds().unwrap().3, 9);
 }
 
 #[test]

@@ -457,6 +457,71 @@ pub(super) fn union_region(previous: Selection, region: NewRegion, fill: Color) 
     }
 }
 
+/// Combines two selections into one, with the second taking priority where
+/// their selected areas overlap.
+pub(super) fn merge_selections(first: Selection, second: Selection) -> Selection {
+    let (ax, ay) = (first.x, first.y);
+    let (aw, ah) = (first.pixels.width(), first.pixels.height());
+    let (bx, by) = (second.x, second.y);
+    let (bw, bh) = (second.pixels.width(), second.pixels.height());
+    let min_x = ax.min(bx);
+    let min_y = ay.min(by);
+    let max_x = (ax + aw as i32).max(bx + bw as i32);
+    let max_y = (ay + ah as i32).max(by + bh as i32);
+    let width = (max_x - min_x) as u32;
+    let height = (max_y - min_y) as u32;
+
+    let mut merged = PixelBuffer::transparent(width, height);
+    let mut merged_mask = vec![false; (width * height) as usize];
+
+    for (source_x, source_y, source_w, source_h, selection) in
+        [(ax, ay, aw, ah, &first), (bx, by, bw, bh, &second)]
+    {
+        for oy in 0..source_h as i32 {
+            for ox in 0..source_w as i32 {
+                let index = (oy as u32 * source_w + ox as u32) as usize;
+                if !selection.mask_bits.get(index).copied().unwrap_or(true) {
+                    continue;
+                }
+                let dx = (source_x - min_x + ox) as u32;
+                let dy = (source_y - min_y + oy) as u32;
+                merged_mask[(dy * width + dx) as usize] = true;
+                if let Some(color) = selection.pixels.get(ox as u32, oy as u32) {
+                    if color.a > 0 {
+                        merged.set(dx, dy, color);
+                    }
+                }
+            }
+        }
+    }
+
+    let is_rect = merged_mask.iter().all(|&selected| selected);
+    let boundary = if is_rect {
+        Vec::new()
+    } else {
+        rspaint_core::selection::boundary_segments(&merged_mask, width, height)
+    };
+    let runs = runs_from_mask(&merged_mask, width, height);
+    Selection {
+        pixels: merged,
+        x: min_x,
+        y: min_y,
+        outline: Vec::new(),
+        mask: !is_rect,
+        boundary,
+        mask_bits: merged_mask,
+        runs,
+        floating: first.floating || second.floating,
+        dragging: false,
+        moved: first.moved || second.moved,
+        drag_offset: (0, 0),
+        base: None,
+        rotation_origin: None,
+        rotation: 0.0,
+        name: second.name,
+    }
+}
+
 pub(super) fn union_rect(
     old_x: i32,
     old_y: i32,

@@ -172,7 +172,9 @@ impl PaintApp {
             Some(FileAction::Open) => self.open_file_dialog(ctx),
             None => {}
         }
-        if ctrl_tap {
+        // With a selection tool, Ctrl is used to reveal the transform controls,
+        // so a bare tap must not also toggle the selection transparency.
+        if ctrl_tap && !self.editor.settings.tool.is_selection() {
             self.editor.toggle_selection_transparency();
         }
         if size_delta != 0 {
