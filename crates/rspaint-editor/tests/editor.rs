@@ -209,6 +209,27 @@ fn hovering_a_disconnected_selection_reports_only_that_area_size() {
 }
 
 #[test]
+fn moving_one_area_of_a_multiselection_keeps_the_transform_box_tight() {
+    let mut e = editor();
+    select(&mut e, (1, 1), (2, 2));
+    e.begin_selection_drag((8, 8), Tool::Select, true, false, false);
+    e.update_selection_drag((9, 9));
+    e.end_selection_drag();
+    assert_eq!(e.selection_bounds(), Some((1, 1, 9, 9)));
+
+    // Drag only the top-left area (outline only, without Ctrl).
+    e.begin_selection_drag((1, 1), Tool::Select, false, false, false);
+    e.update_selection_drag((1, 6));
+    e.end_selection_drag();
+
+    // The box now wraps just the two areas: (1,6)-(2,7) and (8,8)-(9,9).
+    assert_eq!(e.selection_bounds(), Some((1, 6, 9, 4)));
+    assert!(e.point_in_selection((1, 6)));
+    assert!(e.point_in_selection((8, 8)));
+    assert!(!e.point_in_selection((1, 1)));
+}
+
+#[test]
 fn free_form_selection_traces_the_selected_pixels() {
     let mut e = editor();
     e.set_tool(Tool::FreeFormSelect);

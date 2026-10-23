@@ -29,6 +29,66 @@ pub(super) fn snap_to_45(start: (i32, i32), p: (i32, i32)) -> (i32, i32) {
     )
 }
 
+/// Crops a mask selection to the tight bounds of its selected pixels.
+///
+/// Combined selections (shift-add, move one area, subtract) are assembled in
+/// the union of their boxes, which leaves empty margins around the actual
+/// selected areas. Cropping keeps the transform box, the resize handles and
+/// the pivot wrapped around what is really selected. Selections that already
+/// cover their whole box (rectangles) are left untouched.
+pub(super) fn tighten_selection(selection: &mut Selection) {
+    let width = selection.pixels.width();
+    let height = selection.pixels.height();
+    if selection.mask_bits.len() != (width * height) as usize {
+        return;
+    }
+    let mut min_x = width as i32;
+    let mut min_y = height as i32;
+    let mut max_x = -1;
+    let mut max_y = -1;
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            if selection.mask_bits[(y as u32 * width + x as u32) as usize] {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if max_x < 0
+        || (min_x == 0 && min_y == 0 && max_x == width as i32 - 1 && max_y == height as i32 - 1)
+    {
+        return;
+    }
+    let new_width = (max_x - min_x + 1) as u32;
+    let new_height = (max_y - min_y + 1) as u32;
+    let mut mask = vec![false; (new_width * new_height) as usize];
+    for y in 0..new_height as i32 {
+        for x in 0..new_width as i32 {
+            mask[(y as u32 * new_width + x as u32) as usize] =
+                selection.mask_bits[((y + min_y) as u32 * width + (x + min_x) as u32) as usize];
+        }
+    }
+    selection.pixels = selection
+        .pixels
+        .cropped(min_x as u32, min_y as u32, new_width, new_height);
+    selection.mask_bits = mask;
+    selection.x += min_x;
+    selection.y += min_y;
+    for point in selection.outline.iter_mut() {
+        point.0 -= min_x;
+        point.1 -= min_y;
+    }
+    selection.boundary =
+        rspaint_core::selection::boundary_segments(&selection.mask_bits, new_width, new_height);
+    selection.runs = runs_from_mask(&selection.mask_bits, new_width, new_height);
+    if let Some((_, _, origin_x, origin_y)) = selection.rotation_origin.as_mut() {
+        *origin_x += min_x;
+        *origin_y += min_y;
+    }
+}
+
 pub(super) fn selection_from_region(region: NewRegion) -> Selection {
     let width = region.pixels.width();
     let height = region.pixels.height();
@@ -324,7 +384,7 @@ pub(super) fn subtract_region(previous: Selection, region: &NewRegion) -> Option
     }
     let boundary = rspaint_core::selection::boundary_segments(&mask, aw, ah);
     let runs = runs_from_mask(&mask, aw, ah);
-    Some(Selection {
+    let mut selection = Selection {
         pixels: content,
         x: ax,
         y: ay,
@@ -341,7 +401,9 @@ pub(super) fn subtract_region(previous: Selection, region: &NewRegion) -> Option
         rotation_origin: None,
         rotation: 0.0,
         name: previous.name,
-    })
+    };
+    tighten_selection(&mut selection);
+    Some(selection)
 }
 
 pub(super) fn region_adds_new(previous: &Selection, region: &NewRegion) -> bool {
@@ -437,7 +499,7 @@ pub(super) fn union_region(previous: Selection, region: NewRegion, fill: Color) 
 
     let boundary = rspaint_core::selection::boundary_segments(&merged_mask, width, height);
     let runs = runs_from_mask(&merged_mask, width, height);
-    Selection {
+    let mut selection = Selection {
         pixels: merged,
         x: min_x,
         y: min_y,
@@ -454,7 +516,9 @@ pub(super) fn union_region(previous: Selection, region: NewRegion, fill: Color) 
         rotation_origin: None,
         rotation: 0.0,
         name: region.name,
-    }
+    };
+    tighten_selection(&mut selection);
+    selection
 }
 
 /// Combines two selections into one, with the second taking priority where
@@ -502,7 +566,7 @@ pub(super) fn merge_selections(first: Selection, second: Selection) -> Selection
         rspaint_core::selection::boundary_segments(&merged_mask, width, height)
     };
     let runs = runs_from_mask(&merged_mask, width, height);
-    Selection {
+    let mut selection = Selection {
         pixels: merged,
         x: min_x,
         y: min_y,
@@ -519,7 +583,9 @@ pub(super) fn merge_selections(first: Selection, second: Selection) -> Selection
         rotation_origin: None,
         rotation: 0.0,
         name: second.name,
-    }
+    };
+    tighten_selection(&mut selection);
+    selection
 }
 
 pub(super) fn union_rect(

@@ -565,6 +565,11 @@ impl Editor {
         rest.rotation_origin = None;
         rest.rotation = 0.0;
 
+        // Each side keeps only its own area, so crop both to the tight bounds
+        // of the pixels they still select (see `tighten_selection`).
+        tighten_selection(&mut moving);
+        tighten_selection(&mut rest);
+
         // When the selection was already floating, keep the other areas on the
         // canvas as the moving area is lifted out.
         if lift_content && moving.floating {

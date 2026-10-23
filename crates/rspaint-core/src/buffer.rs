@@ -140,6 +140,25 @@ impl PixelBuffer {
         out
     }
 
+    /// Returns a copy of the rectangular region `(x, y, w, h)`.
+    ///
+    /// The region is clamped to the buffer bounds (and kept non-empty).
+    pub fn cropped(&self, x: u32, y: u32, w: u32, h: u32) -> Self {
+        let x = x.min(self.width);
+        let y = y.min(self.height);
+        let w = w.min(self.width - x).max(1);
+        let h = h.min(self.height - y).max(1);
+        let mut out = Self::transparent(w, h);
+        let len = w as usize * 4;
+        let dst = Arc::make_mut(&mut out.data);
+        for row in 0..h {
+            let src = self.index(x, y + row);
+            let start = row as usize * len;
+            dst[start..start + len].copy_from_slice(&self.data[src..src + len]);
+        }
+        out
+    }
+
     /// Copies a rectangular region from another buffer of the same size.
     ///
     /// The region is clamped to the buffer bounds. Does nothing if the sizes differ.
