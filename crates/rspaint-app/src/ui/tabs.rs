@@ -48,7 +48,7 @@ pub fn tab_widget(ui: &mut egui::Ui, label: &str, selected: bool) -> (egui::Resp
     }
     ui.painter().line_segment(
         [rect.right_top(), rect.right_bottom()],
-        egui::Stroke::new(1.0, theme::BORDER),
+        egui::Stroke::new(1.0_f32, theme::BORDER),
     );
     let text_pos = egui::pos2(rect.left() + pad, rect.center().y - galley.size().y * 0.5);
     ui.painter()

@@ -244,7 +244,7 @@ fn swatch(ui: &mut egui::Ui, color: Color) -> egui::Response {
         painter.rect_stroke(
             rect,
             0.0,
-            egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(80)),
             egui::StrokeKind::Inside,
         );
     }
@@ -257,7 +257,7 @@ fn color_indicator(ui: &mut egui::Ui, app: &mut PaintApp) {
         return;
     }
     let painter = ui.painter();
-    let stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(64));
+    let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_gray(64));
     let back_rect =
         egui::Rect::from_min_size(rect.min + egui::vec2(14.0, 14.0), egui::vec2(28.0, 28.0));
     let front_rect = egui::Rect::from_min_size(rect.min, egui::vec2(28.0, 28.0));

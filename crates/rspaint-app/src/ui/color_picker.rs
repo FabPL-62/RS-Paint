@@ -63,7 +63,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                             egui::pos2(hue_rect.min.x, hy),
                             egui::pos2(hue_rect.max.x, hy),
                         ],
-                        egui::Stroke::new(2.0, egui::Color32::WHITE),
+                        egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
                     );
                 });
 
@@ -86,7 +86,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                         egui::pos2(vx, value_rect.min.y),
                         egui::pos2(vx, value_rect.max.y),
                     ],
-                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                    egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
                 );
 
                 ui.horizontal(|ui| {
@@ -102,7 +102,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                     ui.painter().rect_stroke(
                         preview,
                         2.0,
-                        egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(120)),
                         egui::StrokeKind::Inside,
                     );
                     ui.label(format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b));
@@ -215,6 +215,14 @@ fn value_mesh(rect: egui::Rect, hue: f32, sat: f32) -> egui::Mesh {
 
 /// Draws a circular handle with a contrasting outline.
 fn draw_handle(painter: &egui::Painter, center: egui::Pos2) {
-    painter.circle_stroke(center, 6.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
-    painter.circle_stroke(center, 7.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+    painter.circle_stroke(
+        center,
+        6.0,
+        egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
+    );
+    painter.circle_stroke(
+        center,
+        7.0,
+        egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
+    );
 }
