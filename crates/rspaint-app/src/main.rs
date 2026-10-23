@@ -23,6 +23,7 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1024.0, 768.0])
             .with_min_inner_size([480.0, 320.0])
+            .with_maximized(true)
             .with_drag_and_drop(true)
             .with_title("RS Paint"),
         ..Default::default()

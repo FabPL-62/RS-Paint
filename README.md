@@ -18,8 +18,9 @@ testeable y sin depender del navegador.
 - Pendiente (fases 4–5): formatos de paleta, más formatos de guardado, temas,
   persistencia y extras (GIF del historial, ayuda, multiusuario).
 - **Interfaz**: tema oscuro de editor, pestañas con indicador activo, herramientas
-  con iconos en dos columnas y tooltips descriptivos. Español e inglés disponibles
-  desde el menú **Idioma / Language**.
+  con iconos en dos columnas y tooltips descriptivos. La ventana se abre
+  maximizada; al cerrar todas las pestañas queda vacía y el botón **+** permite
+  crear otra. Español e inglés disponibles desde el menú **Idioma / Language**.
 
 El plan de desarrollo por fases está en [`plans/main.md`](plans/main.md).
 
@@ -151,11 +152,15 @@ en [`docs/architecture.md`](docs/architecture.md).
 - **Selección**: Select (rect), Free-Form Select (lazo), **Magic Wand** (con
   tolerancia), **Selection Brush**, **Contour Select** (rectángulo quitando los
   píxeles del color secundario) y **Outliner**. Se pueden **sumar** (Shift) o
-  **restar** (Alt / **clic derecho**) selecciones, mover el contenido, y tienen
-  su propio undo. Cada selección muestra un **recuadro de transformación** con
-  tiradores (redimensiona el contenido) y un **gizmo de rotación** (cruz de
-  pivote + línea y círculo; arrastrar el círculo gira el contenido, con snap a
-  45° con **Shift**).
+  **restar** (Alt / **clic derecho**) selecciones, y tienen su propio undo.
+  Arrastrar sin **Ctrl** mueve solo el área de la selección (cada zona conectada
+  de una multiselección se mueve por separado); con **Ctrl** se mueve el
+  contenido de toda la selección y se muestra el **recuadro de transformación** con tiradores
+  (redimensiona el contenido) y el **gizmo de rotación** (cruz de pivote + línea
+  y círculo; arrastrar el círculo gira el contenido, con snap a 45° con
+  **Shift**). La barra inferior muestra el tamaño del área seleccionada: el
+  rectángulo en creación, la porción bajo el cursor o el total mientras se
+  mantiene **Ctrl**.
 - **Transformaciones**: Flip/Rotate (incl. ángulo arbitrario) y Stretch/Skew se
   aplican **a la selección** si hay una (si no, a toda la imagen); desde las
   opciones de selección hay botones directos (Flip H/V, 90°/180°/270°).
@@ -196,7 +201,8 @@ en [`docs/architecture.md`](docs/architecture.md).
   `C` curve, `R` rectangle, `O` ellipse, `A` airbrush, `T` text, `I` pick
   color, `M` magnifier.
 - **Ctrl** (con herramienta de dibujo): pick temporal del color primario;
-  **Alt**: del secundario.
+  con herramienta de selección: mover el contenido y mostrar los controles de
+  transformación. **Alt**: pick del color secundario / restar en selecciones.
 - `Delete` / `Backspace`: borrar la selección. `Escape`: cancelar/deseleccionar.
 - **Shift**: restringe formas a cuadrado/círculo, líneas a 45°, ajusta el giro a
   45°, y suma en selecciones. **Alt**: resta en selecciones.

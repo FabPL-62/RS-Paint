@@ -206,7 +206,14 @@ impl Workspace {
         }
 
         if window.tabs.is_empty() {
-            return RenderResult { closed: true, tear };
+            // The main window stays open with an empty canvas and the tab
+            // strip's "+" button. Torn-off windows close when empty.
+            show_tab_bar(ctx, window, drag);
+            egui::CentralPanel::default().show(ctx, |_ui| {});
+            return RenderResult {
+                closed: window.id != egui::ViewportId::ROOT,
+                tear,
+            };
         }
         if window.active >= window.tabs.len() {
             window.active = window.tabs.len() - 1;
@@ -463,7 +470,7 @@ fn paint_drag_ghost(ctx: &egui::Context, label: &str) {
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(crate::theme::PANEL)
-                .stroke(egui::Stroke::new(1.0, crate::theme::ACCENT))
+                .stroke(egui::Stroke::new(1.0_f32, crate::theme::ACCENT))
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
                     ui.label(egui::RichText::new(label));
@@ -629,6 +636,38 @@ mod tests {
                 .is_none());
             window.close_tab(0);
             assert!(window.tabs.is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_main_window_stays_open_but_empty_torn_windows_close() {
+        let ctx = egui::Context::default();
+        for (id, should_close) in [
+            (egui::ViewportId::ROOT, false),
+            (egui::ViewportId::from_hash_of("empty-torn"), true),
+        ] {
+            let original = PaintApp::new_blank(true, false, &ctx);
+            let mut shared = original.editor.capture_shared();
+            let mut window = WindowState::new(id, 0, original);
+            window.close_tab(0);
+            let mut drag = None;
+            let mut result = None;
+            let _ = ctx.run(Default::default(), |ctx| {
+                result = Some(Workspace::render_window(
+                    ctx,
+                    &mut window,
+                    &mut shared,
+                    &mut drag,
+                    false,
+                    false,
+                ));
+            });
+            assert_eq!(result.unwrap().closed, should_close);
+            assert!(window.tabs.is_empty());
+
+            window.new_tab(&ctx, false, false, &shared);
+            assert_eq!(window.tabs.len(), 1);
+            assert_eq!(window.active, 0);
         }
     }
 

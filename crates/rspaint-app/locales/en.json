@@ -153,6 +153,7 @@
   "Select a rectangle while excluding pixels matching the secondary color.": "Select a rectangle while excluding pixels matching the secondary color.",
   "Select an area to add a border around its color contour using the primary color.": "Select an area to add a border around its color contour using the primary color.",
   "Select connected pixels of a similar color. Adjust tolerance to include more shades.": "Select connected pixels of a similar color. Adjust tolerance to include more shades.",
+  "Selection": "Selection",
   "Selection Brush": "Selection Brush",
   "Serif": "Serif",
   "Shortcut: {key}": "Shortcut: {key}",
