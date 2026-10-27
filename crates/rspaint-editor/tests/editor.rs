@@ -230,6 +230,28 @@ fn moving_one_area_of_a_multiselection_keeps_the_transform_box_tight() {
 }
 
 #[test]
+fn pasted_selection_keeps_transform_mode_until_it_is_dropped() {
+    let mut e = editor();
+    select(&mut e, (1, 1), (2, 2));
+    assert!(!e.selection_is_pasted());
+    let pixels = e.copy_selection().unwrap();
+
+    e.paste_clipboard(Some(pixels.clone()));
+    assert!(e.selection_is_pasted());
+    // Dropping it (a press outside) commits it and ends the mode.
+    e.deselect();
+    assert!(e.selection.is_none());
+    assert!(!e.selection_is_pasted());
+
+    // A drawing tool settles it into an ordinary selection.
+    e.paste_clipboard(Some(pixels));
+    assert!(e.selection_is_pasted());
+    e.set_tool(Tool::Pencil);
+    assert!(e.selection.is_some());
+    assert!(!e.selection_is_pasted());
+}
+
+#[test]
 fn free_form_selection_traces_the_selected_pixels() {
     let mut e = editor();
     e.set_tool(Tool::FreeFormSelect);

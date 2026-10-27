@@ -165,6 +165,10 @@ pub struct Selection {
     rotation_origin: Option<(PixelBuffer, Vec<bool>, i32, i32)>,
     /// The rotation handle's angle from "up" (radians).
     rotation: f32,
+    /// Set for a freshly pasted element: it keeps its transform controls and
+    /// moves its content on a plain drag (as if Ctrl was still held) until it
+    /// is dropped, so pressing outside it commits it where it is.
+    pasted: bool,
     name: &'static str,
 }
 

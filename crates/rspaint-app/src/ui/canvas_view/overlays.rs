@@ -4,6 +4,7 @@ use super::*;
 pub(super) fn paint_resize_handles(
     painter: &egui::Painter,
     canvas_rect: egui::Rect,
+    viewport_rect: egui::Rect,
     hovered: Option<ResizeHandle>,
 ) {
     let blue = egui::Color32::from_rgb(120, 180, 240);
@@ -15,6 +16,10 @@ pub(super) fn paint_resize_handles(
         egui::StrokeKind::Outside,
     );
     for handle in ResizeHandle::ALL {
+        // Handles on a border that sits on the viewport edge are not usable.
+        if !canvas_handle_active(canvas_rect, viewport_rect, handle) {
+            continue;
+        }
         let rect = resize_handle_rect(canvas_rect, handle);
         let color = if Some(handle) == hovered {
             active

@@ -114,6 +114,7 @@ pub(super) fn selection_from_region(region: NewRegion) -> Selection {
         base: None,
         rotation_origin: None,
         rotation: 0.0,
+        pasted: false,
         name: region.name,
     }
 }
@@ -400,6 +401,7 @@ pub(super) fn subtract_region(previous: Selection, region: &NewRegion) -> Option
         base: previous.base,
         rotation_origin: None,
         rotation: 0.0,
+        pasted: false,
         name: previous.name,
     };
     tighten_selection(&mut selection);
@@ -515,6 +517,7 @@ pub(super) fn union_region(previous: Selection, region: NewRegion, fill: Color) 
         base,
         rotation_origin: None,
         rotation: 0.0,
+        pasted: false,
         name: region.name,
     };
     tighten_selection(&mut selection);
@@ -582,6 +585,7 @@ pub(super) fn merge_selections(first: Selection, second: Selection) -> Selection
         base: None,
         rotation_origin: None,
         rotation: 0.0,
+        pasted: false,
         name: second.name,
     };
     tighten_selection(&mut selection);

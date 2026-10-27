@@ -435,6 +435,7 @@ impl Editor {
             base: Some(base),
             rotation_origin: None,
             rotation: 0.0,
+            pasted: selection.pasted,
             name,
         });
         // The transform stays a floating selection (like a move); it is

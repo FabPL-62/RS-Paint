@@ -947,6 +947,8 @@ impl Editor {
             selection.base = None;
             selection.moved = false;
             selection.dragging = false;
+            // Once committed it is an ordinary selection again.
+            selection.pasted = false;
         }
         self.selection_undo.clear();
         self.selection_resize = None;
@@ -1075,6 +1077,7 @@ impl Editor {
             base: Some(base),
             rotation_origin: None,
             rotation: 0.0,
+            pasted: true,
             name,
         });
         self.mark_full();

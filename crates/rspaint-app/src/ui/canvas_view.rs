@@ -64,14 +64,16 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     let hovered_handle = if occluded {
         None
     } else {
-        cursor_pos.and_then(|pos| hovered_resize_handle(canvas_rect, pos))
+        cursor_pos.and_then(|pos| hovered_resize_handle(canvas_rect, viewport_rect, pos))
     };
     // While drawing is clipped to the selection, hide the transform box and
     // rotation gizmo (only the marching ants remain). The transform controls
-    // are shown while Ctrl is held; without it a selection only shows its area.
+    // are shown while Ctrl is held; a pasted element keeps them until it is
+    // dropped, so the paste can be moved and resized right away.
     let clipping = app.editor.clipping_to_selection();
     let ctrl = ui.input(|i| i.modifiers.command);
-    let show_transform = ctrl && !clipping && app.editor.settings.tool.is_selection();
+    let pasted = app.editor.selection_is_pasted();
+    let show_transform = (ctrl || pasted) && !clipping && app.editor.settings.tool.is_selection();
     let selection_box = if !show_transform {
         None
     } else {
@@ -199,13 +201,19 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui) {
     paint_polygon_overlay(app, ui, canvas_rect, magnification);
     paint_text_overlay(app, ui, canvas_rect, magnification);
 
-    // Resize handles appear near the border, while hovering one, or resizing.
+    // Resize handles appear near a border that can actually be grabbed, while
+    // hovering one, or while resizing. When the picture fills the drawing area
+    // (zoomed in or fitted), the border sits on the viewport edge and no handle
+    // is usable, so nothing is shown and the tools keep the pointer.
     let near_border = cursor_pos.is_some_and(|pos| {
         canvas_rect.expand(HANDLE_MARGIN).contains(pos)
             && !canvas_rect.shrink(HANDLE_MARGIN).contains(pos)
     });
-    if hovered_handle.is_some() || app.editor.resizing_canvas() || near_border {
-        paint_resize_handles(ui.painter(), canvas_rect, hovered_handle);
+    let any_handle = ResizeHandle::ALL
+        .into_iter()
+        .any(|handle| canvas_handle_active(canvas_rect, viewport_rect, handle));
+    if hovered_handle.is_some() || app.editor.resizing_canvas() || (near_border && any_handle) {
+        paint_resize_handles(ui.painter(), canvas_rect, viewport_rect, hovered_handle);
     }
 
     // Draw the custom tool cursor (the OS pointer is hidden over the canvas).
@@ -267,6 +275,28 @@ mod tests {
     fn large_content_is_clamped_within_bounds() {
         assert_eq!(clamp_axis(50.0, 1000.0, 300.0), 0.0);
         assert_eq!(clamp_axis(-5000.0, 1000.0, 300.0), -700.0);
+    }
+
+    #[test]
+    fn canvas_resize_handles_need_their_border_inside_the_viewport() {
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        // The sheet fills the drawing area: its borders sit on the viewport
+        // edges, so nothing can be resized from there.
+        assert!(!canvas_handle_active(
+            viewport,
+            viewport,
+            ResizeHandle::West
+        ));
+        assert!(hovered_resize_handle(viewport, viewport, egui::pos2(1.0, 300.0)).is_none());
+
+        // Zoomed out, the West border is well inside and can be grabbed...
+        let sheet = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(600.0, 500.0));
+        assert!(matches!(
+            hovered_resize_handle(sheet, viewport, egui::pos2(98.0, 300.0)),
+            Some(ResizeHandle::West)
+        ));
+        // ...while the pointer near the viewport edge is still not a handle.
+        assert!(hovered_resize_handle(sheet, viewport, egui::pos2(1.0, 300.0)).is_none());
     }
 }
 

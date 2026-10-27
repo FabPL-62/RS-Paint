@@ -21,6 +21,16 @@ impl Editor {
         bounds.map(|(x0, y0, x1, y1)| (x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
     }
 
+    /// Whether the active selection is a freshly pasted element.
+    ///
+    /// Such a selection keeps its transform controls visible and moves its
+    /// content on a plain drag (as if Ctrl was still held) until it is dropped.
+    pub fn selection_is_pasted(&self) -> bool {
+        self.selection
+            .as_ref()
+            .is_some_and(|selection| selection.pasted)
+    }
+
     pub fn selection_is_simple_rect(&self) -> bool {
         self.selection_rest.is_none()
             && self.selection.as_ref().is_some_and(|selection| {

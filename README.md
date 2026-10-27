@@ -166,8 +166,10 @@ en [`docs/architecture.md`](docs/architecture.md).
   opciones de selección hay botones directos (Flip H/V, 90°/180°/270°).
 - **Portapapeles**: **Ctrl+C** copia la selección (al portapapeles interno y al
   del sistema); **Ctrl+V** pega (acepta imágenes del portapapeles del sistema),
-  centrado en el cursor y como selección flotante que se confirma al hacer clic
-  fuera.
+  centrado en el cursor como **elemento flotante con sus controles de
+  transformación activos**: tiradores y gizmo de rotación visibles sin Ctrl y
+  arrastrar mueve el contenido. Se confirma en el sitio al pulsar fuera de él,
+  sin iniciar otra selección.
 - **Paleta**: selector avanzado **HSV** (cuadrado S/V, tira de hue, barra de
   valor) en un popup junto al color; la paleta es editable (long-press edita un
   cuadro). Cada imagen conserva sus colores primario/secundario y sus paletas.

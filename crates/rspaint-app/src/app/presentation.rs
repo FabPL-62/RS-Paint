@@ -96,18 +96,7 @@ impl PaintApp {
             ui::canvas_view::show(self, ui);
         });
 
-        if self.show_about {
-            egui::Window::new(crate::i18n::tr(ctx, "About RS Paint"))
-                .id(egui::Id::new("dialog-about-rs-paint"))
-                .collapsible(false)
-                .resizable(false)
-                .open(&mut self.show_about)
-                .show(ctx, |ui| {
-                    ui.label("RS Paint");
-                    ui.label(crate::i18n::tr(ui.ctx(), "A Rust port of JS Paint."));
-                    ui.label(crate::i18n::tr(ui.ctx(), "Licensed under the MIT license."));
-                });
-        }
+        self.show_about_window(ctx);
 
         self.show_attributes_window(ctx);
         self.show_history_window(ctx);
@@ -117,5 +106,30 @@ impl PaintApp {
         self.show_thumbnail_window(ctx);
         self.show_error_window(ctx);
         self.show_bitmap_view(ctx);
+    }
+
+    /// Draws the parts of an empty window (no tabs) that do not need a
+    /// document: the menu and the tool buttons come from `update_editor_top`,
+    /// and only the dialogs that can be opened from them are shown here.
+    pub fn update_empty_bottom(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |_ui| {});
+        self.show_about_window(ctx);
+        self.show_error_window(ctx);
+    }
+
+    fn show_about_window(&mut self, ctx: &egui::Context) {
+        if !self.show_about {
+            return;
+        }
+        egui::Window::new(crate::i18n::tr(ctx, "About RS Paint"))
+            .id(egui::Id::new("dialog-about-rs-paint"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut self.show_about)
+            .show(ctx, |ui| {
+                ui.label("RS Paint");
+                ui.label(crate::i18n::tr(ui.ctx(), "A Rust port of JS Paint."));
+                ui.label(crate::i18n::tr(ui.ctx(), "Licensed under the MIT license."));
+            });
     }
 }

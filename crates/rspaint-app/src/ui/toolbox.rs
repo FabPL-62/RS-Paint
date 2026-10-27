@@ -55,8 +55,14 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                                     // One source pixel per physical screen pixel, including HiDPI.
                                     let icon_size =
                                         texture.size_vec2() / ui.ctx().pixels_per_point();
-                                    let image = egui::Image::new((texture.id(), icon_size))
+                                    let mut image = egui::Image::new((texture.id(), icon_size))
                                         .fit_to_exact_size(icon_size);
+                                    // With no document the tools are inert: dim the
+                                    // icons and drop the clickable/hover state.
+                                    let enabled = !app.empty_host() && tool.implemented();
+                                    if app.empty_host() {
+                                        image = image.tint(egui::Color32::from_gray(120));
+                                    }
                                     let button = egui::Button::image(image)
                                         .min_size(egui::vec2(78.0, 44.0))
                                         .fill(if app.editor.settings.tool == tool {
@@ -66,9 +72,7 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                                         })
                                         .selected(app.editor.settings.tool == tool);
                                     let response = ui
-                                        .push_id(tool.name(), |ui| {
-                                            ui.add_enabled(tool.implemented(), button)
-                                        })
+                                        .push_id(tool.name(), |ui| ui.add_enabled(enabled, button))
                                         .inner;
                                     let response = response.on_hover_ui(|ui| {
                                         ui.set_max_width(300.0);
@@ -96,6 +100,11 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                             });
 
                         ui.add_space(6.0);
+                        // The empty window keeps the tool buttons but hides the
+                        // options: they act on a document that is not there.
+                        if app.empty_host() {
+                            return;
+                        }
                         ui.separator();
                         ui.label(
                             egui::RichText::new(crate::i18n::tr(ui.ctx(), "Options")).strong(),

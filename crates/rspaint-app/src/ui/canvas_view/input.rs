@@ -81,7 +81,9 @@ pub(super) fn handle_canvas_resize(
         let origin = ui
             .input(|i| i.pointer.press_origin())
             .or(response.interact_pointer_pos());
-        if let Some(handle) = origin.and_then(|pos| hovered_resize_handle(canvas_rect, pos)) {
+        if let Some(handle) =
+            origin.and_then(|pos| hovered_resize_handle(canvas_rect, viewport_rect, pos))
+        {
             app.editor
                 .begin_canvas_resize(handle, canvas_rect.min, magnification);
             if let Some(pos) = origin {
@@ -329,6 +331,7 @@ pub(super) fn handle_selection(
     let tool = app.editor.settings.tool;
     let (shift, alt, ctrl) =
         ui.input(|i| (i.modifiers.shift, i.modifiers.alt, i.modifiers.command));
+    let pasted = app.editor.selection_is_pasted();
     let on_canvas = |pos: Pos2| canvas_rect.contains(pos);
 
     if response.drag_started() {
@@ -342,13 +345,21 @@ pub(super) fn handle_selection(
                 .or(response.interact_pointer_pos());
             if let Some(pos) = origin {
                 if on_canvas(pos) {
-                    // Right-drag subtracts; Shift adds, Alt subtracts.
+                    let p = to_canvas(pos);
+                    // A pasted element is dropped where it is by a press outside
+                    // it: no new selection starts until it has been committed.
+                    if pasted && !app.editor.point_in_selection(p) {
+                        app.editor.deselect();
+                        return;
+                    }
+                    // Right-drag subtracts; Shift adds, Alt subtracts. A pasted
+                    // element moves as if Ctrl was held.
                     app.editor.begin_selection_drag(
-                        to_canvas(pos),
+                        p,
                         tool,
                         shift && !secondary,
                         alt || right_subtract,
-                        ctrl && primary,
+                        pasted || (ctrl && primary),
                     );
                 }
             }

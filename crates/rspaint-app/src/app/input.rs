@@ -167,10 +167,11 @@ impl PaintApp {
             }
         }
         match action {
-            Some(FileAction::Save) => self.save(ctx),
-            Some(FileAction::SaveAs) => self.save_as(ctx),
+            // The empty window has no document to save.
+            Some(FileAction::Save) if !self.empty_host => self.save(ctx),
+            Some(FileAction::SaveAs) if !self.empty_host => self.save_as(ctx),
             Some(FileAction::Open) => self.open_file_dialog(ctx),
-            None => {}
+            _ => {}
         }
         // With a selection tool, Ctrl is used to reveal the transform controls,
         // so a bare tap must not also toggle the selection transparency.

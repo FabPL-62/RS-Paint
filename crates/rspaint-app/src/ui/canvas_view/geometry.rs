@@ -59,14 +59,32 @@ pub(super) fn resize_handle_rect(canvas_rect: egui::Rect, handle: ResizeHandle) 
 }
 
 /// The handle under `pointer`, if any.
+/// Whether a canvas resize handle can be used.
+///
+/// The handles sit just outside the sheet's border, so they only make sense
+/// while that whole area is visible: when the zoom makes the picture fill the
+/// drawing area (or larger), the border lies on the viewport edge and resizing
+/// from there would steal the pointer from the tools. In that case the handle
+/// is suppressed.
+pub(super) fn canvas_handle_active(
+    canvas_rect: egui::Rect,
+    viewport_rect: egui::Rect,
+    handle: ResizeHandle,
+) -> bool {
+    viewport_rect.contains_rect(resize_handle_rect(canvas_rect, handle).expand(HANDLE_HIT))
+}
+
+/// The canvas resize handle under `pointer`, if any.
 pub(super) fn hovered_resize_handle(
     canvas_rect: egui::Rect,
+    viewport_rect: egui::Rect,
     pointer: egui::Pos2,
 ) -> Option<ResizeHandle> {
     ResizeHandle::ALL.into_iter().find(|&handle| {
-        resize_handle_rect(canvas_rect, handle)
-            .expand(HANDLE_HIT)
-            .contains(pointer)
+        canvas_handle_active(canvas_rect, viewport_rect, handle)
+            && resize_handle_rect(canvas_rect, handle)
+                .expand(HANDLE_HIT)
+                .contains(pointer)
     })
 }
 

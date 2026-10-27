@@ -6,16 +6,25 @@ const ROOT_MENUS: [&str; 7] = [
     "File", "Edit", "View", "Image", "Colors", "Help", "Language",
 ];
 
+/// Menus whose entries all act on the document; disabled while the window has
+/// no tabs open.
+const DOCUMENT_MENUS: [&str; 4] = ["Edit", "View", "Image", "Colors"];
+
 fn popup_id(ctx: &egui::Context, key: &str) -> egui::Id {
     egui::Id::new(("main-menu", ctx.viewport_id(), key))
 }
 
-fn root_button(ui: &mut egui::Ui, key: &str) -> egui::Response {
+fn root_button(ui: &mut egui::Ui, key: &str, enabled: bool) -> egui::Response {
     let selected = egui::Popup::is_id_open(ui.ctx(), popup_id(ui.ctx(), key));
-    ui.add(egui::Button::new(crate::i18n::tr(ui.ctx(), key)).selected(selected))
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(crate::i18n::tr(ui.ctx(), key)).selected(selected),
+    )
 }
 
 pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
+    let empty = app.empty_host();
+    let menus_enabled = move |key: &str| !empty || !DOCUMENT_MENUS.contains(&key);
     egui::TopBottomPanel::top("menu-bar").show(ctx, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             let was_open = ROOT_MENUS
@@ -23,11 +32,11 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                 .any(|key| egui::Popup::is_id_open(ctx, popup_id(ctx, key)));
             let mut buttons = Vec::new();
             for key in &ROOT_MENUS[..6] {
-                buttons.push((*key, root_button(ui, key)));
+                buttons.push((*key, root_button(ui, key, menus_enabled(key))));
             }
             let language = ui
                 .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    root_button(ui, "Language")
+                    root_button(ui, "Language", menus_enabled("Language"))
                 })
                 .inner;
             buttons.push(("Language", language));
@@ -47,6 +56,9 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
                 }
             }
             for (key, response) in &buttons {
+                if !menus_enabled(key) {
+                    continue;
+                }
                 egui::Popup::menu(response)
                     .id(popup_id(ctx, key))
                     .open_memory(None)
@@ -67,18 +79,30 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
 
 fn file_menu(app: &mut PaintApp, ctx: &egui::Context, ui: &mut egui::Ui) {
     if ui.button(crate::i18n::tr(ui.ctx(), "New")).clicked() {
-        app.editor.reset_document();
+        app.new_document();
         ui.close();
     }
     if ui.button(crate::i18n::tr(ui.ctx(), "Open...")).clicked() {
         app.open_file_dialog(ctx);
         ui.close();
     }
-    if ui.button(crate::i18n::tr(ui.ctx(), "Save")).clicked() {
+    if ui
+        .add_enabled(
+            !app.empty_host(),
+            egui::Button::new(crate::i18n::tr(ui.ctx(), "Save")),
+        )
+        .clicked()
+    {
         app.save(ctx);
         ui.close();
     }
-    if ui.button(crate::i18n::tr(ui.ctx(), "Save As...")).clicked() {
+    if ui
+        .add_enabled(
+            !app.empty_host(),
+            egui::Button::new(crate::i18n::tr(ui.ctx(), "Save As...")),
+        )
+        .clicked()
+    {
         app.save_as(ctx);
         ui.close();
     }

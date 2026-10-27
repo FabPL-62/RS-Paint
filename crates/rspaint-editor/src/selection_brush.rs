@@ -115,6 +115,7 @@ impl Editor {
             base: None,
             rotation_origin: None,
             rotation: 0.0,
+            pasted: false,
             name: "Selection Brush",
         });
     }

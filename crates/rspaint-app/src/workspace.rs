@@ -54,6 +54,10 @@ struct WindowState {
     confirm_close: bool,
     /// Set once the user confirmed closing, to bypass the confirmation.
     force_close: bool,
+    /// The app that hosts an empty window (no tabs): it keeps the menu and the
+    /// toolbox usable so a file can be opened. Created when the last tab closes
+    /// and turned back into the first tab when a document is requested.
+    shell: Option<PaintApp>,
 }
 
 impl WindowState {
@@ -67,6 +71,7 @@ impl WindowState {
             pointer_hover: false,
             confirm_close: false,
             force_close: false,
+            shell: None,
         }
     }
 
@@ -83,7 +88,7 @@ impl WindowState {
             return;
         }
         let closing_active = index == self.active;
-        self.tabs.remove(index);
+        let closed = self.tabs.remove(index);
         if self.active > index || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
         }
@@ -94,6 +99,58 @@ impl WindowState {
                 tab.editor.invalidate_canvas();
             }
         }
+        // The main window stays open with no tabs: keep the closed app as the
+        // host of the menu and toolbox, but drop the document with it.
+        if self.tabs.is_empty() && self.id == egui::ViewportId::ROOT && self.shell.is_none() {
+            let mut shell = closed;
+            shell.set_empty_host(true);
+            shell.editor.reset_document();
+            self.shell = Some(shell);
+        }
+    }
+
+    /// Moves the empty window's host app into the first tab (a blank app is
+    /// created if the window never had one).
+    fn adopt_shell(&mut self, ctx: &egui::Context, has_gpu: bool, srgb: bool) {
+        let mut app = self
+            .shell
+            .take()
+            .unwrap_or_else(|| PaintApp::new_blank(has_gpu, srgb, ctx));
+        app.set_empty_host(false);
+        self.tabs.push(app);
+        self.active = 0;
+        self.tabs[0].editor.invalidate_canvas();
+        ctx.request_repaint();
+    }
+
+    /// Opens the first tab when the empty window asks for a document (File >
+    /// New, Open, Ctrl+O or a dropped file).
+    fn start_tab_from_shell(&mut self, ctx: &egui::Context, has_gpu: bool, srgb: bool) -> bool {
+        let Some(shell) = self.shell.as_mut() else {
+            return false;
+        };
+        let new_tab = shell.take_new_tab_request();
+        let opened = shell.take_opened_document();
+        if !new_tab && opened.is_none() {
+            return false;
+        }
+        self.adopt_shell(ctx, has_gpu, srgb);
+        match opened {
+            Some((buffer, path)) => self.tabs[0].editor.load_buffer(buffer, Some(path)),
+            None => self.tabs[0].editor.reset_document(),
+        }
+        true
+    }
+
+    /// Whether the frame carries images dropped on the empty window.
+    fn dropped_images_pending(ctx: &egui::Context) -> bool {
+        ctx.input(|input| {
+            input.raw.dropped_files.iter().any(|file| {
+                file.path
+                    .as_deref()
+                    .is_some_and(PaintApp::supports_image_path)
+            })
+        })
     }
 
     fn open_pending_document(
@@ -197,7 +254,11 @@ impl Workspace {
                 window.tabs[index].editor.invalidate_canvas();
             }
             TabAction::Close(index) => window.close_tab(index),
-            TabAction::New => window.new_tab(ctx, has_gpu, srgb, shared),
+            TabAction::New => {
+                // The new tab replaces the empty window's host app.
+                window.shell = None;
+                window.new_tab(ctx, has_gpu, srgb, shared);
+            }
             TabAction::Reorder(from, to) => {
                 if from < window.tabs.len() && to < window.tabs.len() && from != to {
                     let tab = window.tabs.remove(from);
@@ -210,18 +271,49 @@ impl Workspace {
         }
 
         if window.tabs.is_empty() {
-            // The main window stays open with an empty canvas and the tab
-            // strip's "+" button. Torn-off windows close when empty.
+            // Torn-off windows close as soon as they lose their last tab.
+            if window.id != egui::ViewportId::ROOT {
+                return RenderResult { closed: true, tear };
+            }
+            // A file dropped on the empty window starts the first tab, so the
+            // normal path below opens it and consumes the drop this frame.
+            if WindowState::dropped_images_pending(ctx) {
+                window.adopt_shell(ctx, has_gpu, srgb);
+            }
+        }
+
+        if window.tabs.is_empty() {
+            // The main window stays open with the menu and the tool buttons, so
+            // a file can be opened from here, but without the canvas, the
+            // palette or the tool options (they all need a document).
+            if window.shell.is_none() {
+                let mut app = PaintApp::new_blank(has_gpu, srgb, ctx);
+                app.set_empty_host(true);
+                window.shell = Some(app);
+            }
+            if let Some(shell) = window.shell.as_mut() {
+                shell.editor.apply_shared(shared);
+                shell.update_editor_top(ctx);
+            }
+            // Like in a tab, the strip sits below the menu and right of the
+            // toolbox, above the empty central area.
             show_tab_bar(ctx, window, drag);
-            egui::CentralPanel::default().show(ctx, |_ui| {});
+            if let Some(shell) = window.shell.as_mut() {
+                shell.update_empty_bottom(ctx);
+                *shared = shell.editor.capture_shared();
+            }
+            window.start_tab_from_shell(ctx, has_gpu, srgb);
             return RenderResult {
-                closed: window.id != egui::ViewportId::ROOT,
+                closed: false,
                 tear,
             };
         }
         if window.active >= window.tabs.len() {
             window.active = window.tabs.len() - 1;
         }
+        // Tabs are back (e.g. one was dragged into the empty window): the host
+        // app is no longer needed.
+        window.shell = None;
         let active = window.active;
         window.tabs[active].set_window_id(window.render_id);
         window.tabs[active].editor.apply_shared(shared);
@@ -666,6 +758,72 @@ mod tests {
             window.close_tab(0);
             assert!(window.tabs.is_empty());
         }
+    }
+
+    #[test]
+    fn empty_window_tool_choice_carries_into_the_first_tab() {
+        let ctx = egui::Context::default();
+        let original = PaintApp::new_blank(true, false, &ctx);
+        let mut window = WindowState::new(egui::ViewportId::ROOT, 0, original);
+        window.close_tab(0);
+        let shell = window.shell.as_mut().unwrap();
+        shell.editor.set_tool(rspaint_editor::tools::Tool::Brush);
+        shell.new_document();
+        assert!(window.start_tab_from_shell(&ctx, true, false));
+        assert_eq!(
+            window.tabs[0].editor.settings.tool,
+            rspaint_editor::tools::Tool::Brush
+        );
+    }
+
+    #[test]
+    fn empty_window_host_starts_a_tab_when_a_document_is_requested() {
+        let ctx = egui::Context::default();
+        let original = PaintApp::new_blank(true, false, &ctx);
+        let mut window = WindowState::new(egui::ViewportId::ROOT, 0, original);
+        window.close_tab(0);
+        assert!(window.tabs.is_empty());
+        let shell = window.shell.as_mut().expect("empty window keeps a host");
+        assert!(shell.empty_host());
+
+        // File > New asks for a tab instead of resetting the hidden document.
+        shell.new_document();
+        assert!(window.start_tab_from_shell(&ctx, true, false));
+        assert_eq!(window.tabs.len(), 1);
+        assert_eq!(window.active, 0);
+        assert!(!window.tabs[0].empty_host());
+        assert!(window.shell.is_none());
+
+        // Opening a document from the empty window loads it into the first tab.
+        window.close_tab(0);
+        let opened = PixelBuffer::new(12, 8, Color::rgb(20, 80, 150));
+        window
+            .shell
+            .as_mut()
+            .unwrap()
+            .request_open_document(opened.clone(), "landscape.png".into());
+        assert!(window.start_tab_from_shell(&ctx, true, false));
+        assert_eq!(window.tabs.len(), 1);
+        assert_eq!(window.tabs[0].editor.document.buffer, opened);
+        assert_eq!(window.tabs[0].editor.document.name, "landscape");
+        assert!(!window.tabs[0].editor.is_modified());
+    }
+
+    #[test]
+    fn empty_window_plus_button_starts_the_first_tab() {
+        let ctx = egui::Context::default();
+        let original = PaintApp::new_blank(true, false, &ctx);
+        let mut shared = original.editor.capture_shared();
+        let mut window = WindowState::new(egui::ViewportId::ROOT, 0, original);
+        window.close_tab(0);
+        window.pending = TabAction::New;
+        let mut drag = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            Workspace::render_window(ctx, &mut window, &mut shared, &mut drag, false, false);
+        });
+        assert_eq!(window.tabs.len(), 1);
+        assert_eq!(window.active, 0);
+        assert!(window.shell.is_none());
     }
 
     #[test]

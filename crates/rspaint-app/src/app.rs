@@ -90,6 +90,13 @@ pub struct PaintApp {
     has_gpu: bool,
     srgb_output: bool,
     window_id: u64,
+    /// Whether this app hosts an empty window (no tabs): the menu and the tool
+    /// buttons stay visible, but the canvas, the palette and the tool options
+    /// are hidden.
+    empty_host: bool,
+    /// Set by File > New while hosting an empty window, so the workspace opens
+    /// the new document in a tab instead of resetting the hidden one.
+    new_tab_requested: bool,
 }
 
 impl PaintApp {
@@ -149,11 +156,40 @@ impl PaintApp {
             has_gpu,
             srgb_output,
             window_id: 0,
+            empty_host: false,
+            new_tab_requested: false,
         }
     }
 
     pub fn has_gpu(&self) -> bool {
         self.has_gpu
+    }
+
+    /// Starts a new blank document (File > New).
+    ///
+    /// In a tab this replaces the document in place; in the empty window it
+    /// asks the workspace for a new tab.
+    pub fn new_document(&mut self) {
+        if self.empty_host {
+            self.new_tab_requested = true;
+        } else {
+            self.editor.reset_document();
+        }
+    }
+
+    /// Takes the pending File > New request of an empty window's host app.
+    pub(crate) fn take_new_tab_request(&mut self) -> bool {
+        std::mem::take(&mut self.new_tab_requested)
+    }
+
+    pub fn empty_host(&self) -> bool {
+        self.empty_host
+    }
+
+    /// Marks this app as the host of an empty window (no tabs).
+    pub(crate) fn set_empty_host(&mut self, empty_host: bool) {
+        self.empty_host = empty_host;
+        self.new_tab_requested = false;
     }
 
     pub fn srgb_output(&self) -> bool {
