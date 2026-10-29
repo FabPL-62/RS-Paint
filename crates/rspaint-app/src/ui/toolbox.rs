@@ -1,4 +1,5 @@
-//! The tool box and tool options on the left.
+//! The single-column tool box on the left and the tool options sidebar on the
+//! right.
 
 use eframe::egui;
 use rspaint_core::{BlendMode, BrushShape, Color};
@@ -7,7 +8,7 @@ use crate::app::{to_color32, BorderPlacement, ColorTarget, FlipRotate, PaintApp,
 use crate::text::FontFamily;
 use crate::tools::Tool;
 
-/// Display order, read left to right in the two-column grid.
+/// Display order, read top to bottom in the single-column tool box.
 const TOOL_ORDER: [Tool; 20] = [
     Tool::FreeFormSelect,
     Tool::Select,
@@ -31,130 +32,167 @@ const TOOL_ORDER: [Tool; 20] = [
     Tool::RoundedRectangle,
 ];
 
-/// Draws the tool selection buttons and the options for the active tool.
-pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
+/// Side of a tool button, in points. The icon keeps its native pixel size and
+/// is centered inside it, so every button is a perfect square.
+const TOOL_BUTTON: f32 = 31.0;
+/// Inner margin of the tool box around the buttons.
+const TOOLBOX_MARGIN: f32 = 7.0;
+/// Tool box width: the buttons plus both margins.
+const TOOLBOX_WIDTH: f32 = TOOL_BUTTON + 2.0 * TOOLBOX_MARGIN;
+/// Tool options sidebar width.
+const OPTIONS_WIDTH: f32 = 200.0;
+
+/// Draws the tool selection buttons in a single column.
+pub fn show_tools(app: &mut PaintApp, ctx: &egui::Context) {
     egui::SidePanel::left("toolbox")
         .resizable(false)
-        .exact_width(188.0)
+        .exact_width(TOOLBOX_WIDTH)
+        .frame(
+            egui::Frame::new()
+                .fill(crate::theme::PANEL)
+                .inner_margin(egui::Margin::symmetric(TOOLBOX_MARGIN as i8, 4)),
+        )
+        .show(ctx, |ui| {
+            // Hide the bar so the square buttons keep the full panel width;
+            // the wheel still scrolls when the column does not fit.
+            egui::ScrollArea::vertical()
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
+                    ui.add_space(4.0);
+                    for tool in TOOL_ORDER {
+                        tool_button(app, ui, tool);
+                    }
+                    ui.add_space(4.0);
+                });
+        });
+}
+
+/// Draws the options for the active tool in a right-hand sidebar. With no
+/// document there is no active tool, so the sidebar stays hidden.
+pub fn show_options(app: &mut PaintApp, ctx: &egui::Context) {
+    if app.empty_host() {
+        return;
+    }
+    egui::SidePanel::right("tool-options")
+        .resizable(false)
+        .exact_width(OPTIONS_WIDTH)
         .show(ctx, |ui| {
             // Keep the content inside the fixed panel width: without this, a
             // wide options row grows the panel's measured rect and leaves an
-            // unpainted gap between the toolbox and the canvas.
+            // unpainted gap between the canvas and the sidebar.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(4.0);
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(crate::i18n::tr(ui.ctx(), "Tools")).strong());
-                        egui::Grid::new("tool-grid")
-                            .num_columns(2)
-                            .spacing(egui::vec2(8.0, 6.0))
-                            .show(ui, |ui| {
-                                for (index, tool) in TOOL_ORDER.into_iter().enumerate() {
-                                    let texture = app.tool_icons.texture(tool);
-                                    // One source pixel per physical screen pixel, including HiDPI.
-                                    let icon_size =
-                                        texture.size_vec2() / ui.ctx().pixels_per_point();
-                                    let mut image = egui::Image::new((texture.id(), icon_size))
-                                        .fit_to_exact_size(icon_size);
-                                    // With no document the tools are inert: dim the
-                                    // icons and drop the clickable/hover state.
-                                    let enabled = !app.empty_host() && tool.implemented();
-                                    if app.empty_host() {
-                                        image = image.tint(egui::Color32::from_gray(120));
-                                    }
-                                    let button = egui::Button::image(image)
-                                        .min_size(egui::vec2(78.0, 44.0))
-                                        .fill(if app.editor.settings.tool == tool {
-                                            crate::theme::ICON_SELECTED
-                                        } else {
-                                            crate::theme::ICON_SURFACE
-                                        })
-                                        .selected(app.editor.settings.tool == tool);
-                                    let response = ui
-                                        .push_id(tool.name(), |ui| ui.add_enabled(enabled, button))
-                                        .inner;
-                                    let response = response.on_hover_ui(|ui| {
-                                        ui.set_max_width(300.0);
-                                        let name = crate::i18n::tr(ui.ctx(), tool.name());
-                                        ui.label(egui::RichText::new(name).strong());
-                                        ui.label(crate::i18n::tr(
-                                            ui.ctx(),
-                                            crate::tool_icons::description(tool),
-                                        ));
-                                        if let Some(shortcut) = tool.shortcut() {
-                                            ui.weak(crate::i18n::message(
-                                                ui.ctx(),
-                                                "Shortcut: {key}",
-                                                &[("key", &shortcut.to_string())],
-                                            ));
-                                        }
-                                    });
-                                    if response.clicked() {
-                                        app.editor.set_tool(tool);
-                                    }
-                                    if index % 2 == 1 {
-                                        ui.end_row();
-                                    }
-                                }
-                            });
+                    ui.label(egui::RichText::new(crate::i18n::tr(ui.ctx(), "Options")).strong());
+                    tool_options(app, ui);
 
-                        ui.add_space(6.0);
-                        // The empty window keeps the tool buttons but hides the
-                        // options: they act on a document that is not there.
-                        if app.empty_host() {
-                            return;
-                        }
-                        ui.separator();
-                        ui.label(
-                            egui::RichText::new(crate::i18n::tr(ui.ctx(), "Options")).strong(),
+                    ui.add_space(6.0);
+                    ui.separator();
+                    let label = if app.editor.selection.is_some() {
+                        crate::i18n::tr(ui.ctx(), "Replace Color (selection)")
+                    } else {
+                        crate::i18n::tr(ui.ctx(), "Replace Color (all)")
+                    };
+                    if ui
+                        .button(label)
+                        .on_hover_text(crate::i18n::tr(
+                            ui.ctx(),
+                            "Replace the foreground color with the background color",
+                        ))
+                        .clicked()
+                    {
+                        app.editor.replace_primary_with_secondary();
+                    }
+                    if ui
+                        .add_enabled(
+                            app.editor.selection.is_some(),
+                            egui::Button::new(crate::i18n::tr(ui.ctx(), "Clear selection")),
+                        )
+                        .on_hover_text(crate::i18n::tr(ui.ctx(), "Deselect the current selection"))
+                        .clicked()
+                    {
+                        app.editor.deselect();
+                    }
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::tr(ui.ctx(), "Grid"));
+                        ui.add(
+                            egui::DragValue::new(&mut app.editor.settings.grid_opacity)
+                                .range(0..=100)
+                                .suffix("%"),
                         );
-                        tool_options(app, ui);
-
-                        ui.add_space(6.0);
-                        ui.separator();
-                        let label = if app.editor.selection.is_some() {
-                            crate::i18n::tr(ui.ctx(), "Replace Color (selection)")
-                        } else {
-                            crate::i18n::tr(ui.ctx(), "Replace Color (all)")
-                        };
-                        if ui
-                            .button(label)
-                            .on_hover_text(crate::i18n::tr(
-                                ui.ctx(),
-                                "Replace the foreground color with the background color",
-                            ))
-                            .clicked()
-                        {
-                            app.editor.replace_primary_with_secondary();
-                        }
-                        if ui
-                            .add_enabled(
-                                app.editor.selection.is_some(),
-                                egui::Button::new(crate::i18n::tr(ui.ctx(), "Clear selection")),
-                            )
-                            .on_hover_text(crate::i18n::tr(
-                                ui.ctx(),
-                                "Deselect the current selection",
-                            ))
-                            .clicked()
-                        {
-                            app.editor.deselect();
-                        }
-
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(crate::i18n::tr(ui.ctx(), "Grid"));
-                            ui.add(
-                                egui::DragValue::new(&mut app.editor.settings.grid_opacity)
-                                    .range(0..=100)
-                                    .suffix("%"),
-                            );
-                        });
                     });
                 });
         });
+}
+
+/// A square tool button with the icon painted at its native size.
+fn tool_button(app: &mut PaintApp, ui: &mut egui::Ui, tool: Tool) -> egui::Response {
+    // With no document the tools are inert: dim the icons and drop the clicks.
+    let enabled = !app.empty_host() && tool.implemented();
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(TOOL_BUTTON, TOOL_BUTTON), egui::Sense::click());
+    let selected = app.editor.settings.tool == tool;
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(
+            rect,
+            2.0,
+            if selected {
+                crate::theme::ICON_SELECTED
+            } else {
+                crate::theme::ICON_SURFACE
+            },
+        );
+        if enabled && response.hovered() {
+            painter.rect_stroke(
+                rect,
+                2.0,
+                egui::Stroke::new(1.0_f32, crate::theme::ACCENT),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let texture = app.tool_icons.texture(tool);
+        // One source pixel per physical screen pixel, including HiDPI. The
+        // icon is centered without ever being resized.
+        let icon_size = texture.size_vec2() / ui.ctx().pixels_per_point();
+        let icon_rect = egui::Rect::from_center_size(rect.center(), icon_size);
+        painter.image(
+            texture.id(),
+            icon_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            if enabled {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_gray(120)
+            },
+        );
+    }
+    let response = response.on_hover_ui(|ui| {
+        ui.set_max_width(300.0);
+        let name = crate::i18n::tr(ui.ctx(), tool.name());
+        ui.label(egui::RichText::new(name).strong());
+        ui.label(crate::i18n::tr(
+            ui.ctx(),
+            crate::tool_icons::description(tool),
+        ));
+        if let Some(shortcut) = tool.shortcut() {
+            ui.weak(crate::i18n::message(
+                ui.ctx(),
+                "Shortcut: {key}",
+                &[("key", &shortcut.to_string())],
+            ));
+        }
+    });
+    if enabled && response.clicked() {
+        app.editor.set_tool(tool);
+    }
+    response
 }
 
 fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
@@ -546,24 +584,28 @@ fn shape_row(ui: &mut egui::Ui, shape: &mut BrushShape, allow_diagonal: bool) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tool_images_form_two_columns_and_ten_rows() {
-        let ctx = egui::Context::default();
-        crate::theme::apply(&ctx);
-        let mut app = PaintApp::new_blank(true, false, &ctx);
-        let input = egui::RawInput {
+    fn frame() -> egui::RawInput {
+        egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1024.0, 768.0),
             )),
             ..Default::default()
-        };
-        let _ = ctx.run(input.clone(), |ctx| show(&mut app, ctx));
-        let output = ctx.run(input, |ctx| show(&mut app, ctx));
+        }
+    }
+
+    #[test]
+    fn tool_images_form_a_single_column_at_native_size() {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let mut app = PaintApp::new_blank(true, false, &ctx);
+        let _ = ctx.run(frame(), |ctx| show_tools(&mut app, ctx));
+        let output = ctx.run(frame(), |ctx| show_tools(&mut app, ctx));
         let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
         let mut rectangles = Vec::new();
         for tool in TOOL_ORDER {
-            let id = app.tool_icons.texture(tool).id();
+            let texture = app.tool_icons.texture(tool);
+            let id = texture.id();
             let rect = primitives
                 .iter()
                 .find_map(|primitive| match &primitive.primitive {
@@ -573,17 +615,62 @@ mod tests {
                     _ => None,
                 })
                 .expect("each tool has a visible image");
+            // The icon is never scaled: its mesh keeps the texture's size.
+            let native = texture.size_vec2() / output.pixels_per_point;
+            assert!((rect.width() - native.x).abs() < 0.01, "{tool:?} width");
+            assert!((rect.height() - native.y).abs() < 0.01, "{tool:?} height");
             rectangles.push(rect);
         }
-        for row in rectangles.chunks(2) {
-            assert_eq!(row[0].center().y, row[1].center().y);
-            assert!(row[0].right() < row[1].left());
-            assert!(row[1].right() <= 188.0);
+        // One column, stacked top to bottom inside the narrow tool box.
+        for pair in rectangles.windows(2) {
+            assert_eq!(pair[0].center().x, pair[1].center().x);
+            assert!(pair[0].bottom() < pair[1].top());
+            assert!(pair[0].right() <= TOOLBOX_WIDTH);
         }
-        for rows in rectangles.chunks(2).collect::<Vec<_>>().windows(2) {
-            assert!(rows[0][0].bottom() < rows[1][0].top());
-            assert_eq!(rows[0][0].center().x, rows[1][0].center().x);
-            assert_eq!(rows[0][1].center().x, rows[1][1].center().x);
+    }
+
+    #[test]
+    fn tool_buttons_are_small_squares() {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let mut app = PaintApp::new_blank(true, false, &ctx);
+        let mut rects = Vec::new();
+        let _ = ctx.run(frame(), |ctx| {
+            egui::SidePanel::left("probe")
+                .exact_width(TOOLBOX_WIDTH)
+                .show(ctx, |ui| {
+                    for tool in TOOL_ORDER {
+                        rects.push(tool_button(&mut app, ui, tool).rect);
+                    }
+                });
+        });
+        assert_eq!(rects.len(), TOOL_ORDER.len());
+        for rect in rects {
+            assert_eq!(rect.width(), TOOL_BUTTON);
+            assert_eq!(rect.height(), TOOL_BUTTON);
         }
+    }
+
+    #[test]
+    fn options_sidebar_only_shows_with_a_document() {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let mut app = PaintApp::new_blank(true, false, &ctx);
+        let mut available = Vec::new();
+        for empty in [false, true] {
+            app.set_empty_host(empty);
+            let mut width = 0.0;
+            let _ = ctx.run(frame(), |ctx| {
+                show_tools(&mut app, ctx);
+                show_options(&mut app, ctx);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    width = ui.available_width();
+                });
+            });
+            available.push(width);
+        }
+        // Hiding the sidebar gives the extra width back to the canvas, which
+        // is what the pan limits follow.
+        assert_eq!(available[1] - available[0], OPTIONS_WIDTH);
     }
 }

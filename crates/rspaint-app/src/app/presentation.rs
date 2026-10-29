@@ -84,7 +84,8 @@ impl PaintApp {
         self.update_title(ctx);
 
         ui::menubar::show(self, ctx);
-        ui::toolbox::show(self, ctx);
+        ui::toolbox::show_tools(self, ctx);
+        ui::toolbox::show_options(self, ctx);
     }
 
     pub fn update_editor_bottom(&mut self, ctx: &egui::Context) {
