@@ -2479,7 +2479,7 @@ dependencies = [
 
 [[package]]
 name = "rspaint-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -2494,14 +2494,14 @@ dependencies = [
 
 [[package]]
 name = "rspaint-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "rspaint-editor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "emath",
