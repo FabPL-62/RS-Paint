@@ -635,7 +635,10 @@ pub(super) fn handle_drawing(
         }
     }
     if response.drag_stopped() {
-        app.editor.end_stroke(shift);
+        match response.interact_pointer_pos() {
+            Some(pos) => app.editor.end_stroke_at(to_canvas(pos), shift),
+            None => app.editor.end_stroke(shift),
+        }
     }
 
     if response.clicked() {

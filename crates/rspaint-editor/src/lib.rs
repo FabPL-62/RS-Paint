@@ -6,6 +6,7 @@ use emath::{self as geometry};
 use rspaint_core::draw::{
     draw_bezier, draw_ellipse, draw_line, draw_line_masked, draw_quadratic_curve, draw_rectangle,
     draw_rounded_rectangle, erase_line, fill_ellipse, fill_rectangle, fill_rounded_rectangle,
+    walk_line,
 };
 use rspaint_core::fill::flood_fill;
 use rspaint_core::{
@@ -378,6 +379,14 @@ pub struct Editor {
     pub pointer: Option<(i32, i32)>,
     stroke: Option<Stroke>,
     stroke_painted: Vec<bool>,
+    /// Last two kept pixels of a pixel-perfect 1 px stroke, and whether the
+    /// last one was painted by this stroke (rather than already being there).
+    thin_prev2: Option<(i32, i32)>,
+    thin_prev1: Option<(i32, i32)>,
+    thin_prev1_new: bool,
+    /// Smoothed freehand pointer position and the raw point it catches up to.
+    smooth_position: Option<(f32, f32)>,
+    smooth_target: Option<(i32, i32)>,
     rng: Rng,
     canvas_dirty: bool,
     dirty_rect: Option<RectI>,
@@ -405,6 +414,10 @@ pub struct ToolSettings {
     pub outliner_color: Color,
     pub outliner_placement: BorderPlacement,
     pub selection_transparent: bool,
+    /// Removes the extra pixel at the corners of 1 px pencil/brush strokes.
+    pub pixel_perfect: bool,
+    /// Pointer smoothing for Pencil and Brush, from 0 (off) to 100 (slowest).
+    pub stroke_smoothing: u8,
     pub magic_wand_tolerance: u8,
     pub text_family: crate::text::FontFamily,
     pub text_size: f32,
@@ -457,6 +470,8 @@ impl Default for ToolSettings {
             outliner_color: Color::WHITE,
             outliner_placement: BorderPlacement::Outside,
             selection_transparent: false,
+            pixel_perfect: false,
+            stroke_smoothing: 0,
             magic_wand_tolerance: 0,
             text_family: crate::text::FontFamily::Sans,
             text_size: 16.0,
@@ -558,6 +573,11 @@ impl Editor {
             pointer: None,
             stroke: None,
             stroke_painted: Vec::new(),
+            thin_prev2: None,
+            thin_prev1: None,
+            thin_prev1_new: false,
+            smooth_position: None,
+            smooth_target: None,
             rng: Rng(0x1234_5678),
             canvas_dirty: true,
             dirty_rect: None,

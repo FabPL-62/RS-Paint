@@ -92,6 +92,195 @@ fn pencil_stroke_undo_redo_preserves_pixels() {
     assert_eq!(e.document.buffer, drawn);
 }
 
+/// A short staircase of pointer segments whose joins create L corners:
+/// diagonal, horizontal, vertical, diagonal...
+fn pixel_perfect_staircase(e: &mut Editor) {
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    for p in [(3, 2), (3, 3), (4, 4), (5, 4), (5, 5), (6, 6)] {
+        e.update_stroke(p, false);
+    }
+    e.end_stroke(false);
+}
+
+#[test]
+fn pixel_perfect_pencil_removes_corner_pixels() {
+    let mut e = editor();
+    e.set_tool(Tool::Pencil);
+    e.settings.pencil_size = 1;
+    e.settings.pixel_perfect = true;
+    pixel_perfect_staircase(&mut e);
+    for (x, y) in [(2, 2), (3, 3), (4, 4), (5, 5), (6, 6)] {
+        assert_eq!(
+            e.document.buffer.get(x, y),
+            Some(Color::BLACK),
+            "kept ({x}, {y})"
+        );
+    }
+    for (x, y) in [(3, 2), (5, 4)] {
+        assert_eq!(
+            e.document.buffer.get(x, y),
+            Some(Color::WHITE),
+            "corner ({x}, {y})"
+        );
+    }
+}
+
+#[test]
+fn pixel_perfect_off_keeps_pencil_corner_pixels() {
+    let mut e = editor();
+    e.set_tool(Tool::Pencil);
+    e.settings.pencil_size = 1;
+    e.settings.pixel_perfect = false;
+    pixel_perfect_staircase(&mut e);
+    for (x, y) in [(3, 2), (5, 4)] {
+        assert_eq!(
+            e.document.buffer.get(x, y),
+            Some(Color::BLACK),
+            "corner ({x}, {y})"
+        );
+    }
+}
+
+#[test]
+fn pixel_perfect_applies_to_one_pixel_brush() {
+    let mut e = editor();
+    e.set_tool(Tool::Brush);
+    e.settings.brush_size = 1;
+    e.settings.pixel_perfect = true;
+    pixel_perfect_staircase(&mut e);
+    for (x, y) in [(2, 2), (3, 3), (4, 4), (5, 5), (6, 6)] {
+        assert_eq!(
+            e.document.buffer.get(x, y),
+            Some(Color::BLACK),
+            "kept ({x}, {y})"
+        );
+    }
+    for (x, y) in [(3, 2), (5, 4)] {
+        assert_eq!(
+            e.document.buffer.get(x, y),
+            Some(Color::WHITE),
+            "corner ({x}, {y})"
+        );
+    }
+}
+
+#[test]
+fn pixel_perfect_ignores_thicker_pencil_strokes() {
+    let draw = |pixel_perfect: bool| {
+        let mut e = editor();
+        e.set_tool(Tool::Pencil);
+        e.settings.pencil_size = 3;
+        e.settings.pixel_perfect = pixel_perfect;
+        pixel_perfect_staircase(&mut e);
+        e.document.buffer
+    };
+    assert_eq!(draw(true), draw(false));
+}
+
+#[test]
+fn pixel_perfect_keeps_self_intersection_pixels() {
+    let mut e = editor();
+    e.set_tool(Tool::Pencil);
+    e.settings.pencil_size = 1;
+    e.settings.pixel_perfect = true;
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    for p in [(6, 6), (6, 2), (2, 6)] {
+        e.update_stroke(p, false);
+    }
+    e.end_stroke(false);
+    assert_eq!(e.document.buffer.get(4, 4), Some(Color::BLACK));
+}
+
+#[test]
+fn smoothing_lags_but_ends_at_the_release_point() {
+    let mut e = editor();
+    e.set_tool(Tool::Pencil);
+    e.settings.pencil_size = 1;
+    e.settings.stroke_smoothing = 100;
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.update_stroke((12, 2), false);
+    let last_before = (2..=12)
+        .rev()
+        .find(|&x| e.document.buffer.get(x, 2) == Some(Color::BLACK))
+        .unwrap();
+    assert!(last_before < 12, "painted up to {last_before}");
+    e.end_stroke(false);
+    for x in 2..=12 {
+        assert_eq!(e.document.buffer.get(x, 2), Some(Color::BLACK), "pixel {x}");
+    }
+}
+
+#[test]
+fn zero_smoothing_draws_the_full_segment() {
+    let mut e = editor();
+    e.set_tool(Tool::Pencil);
+    e.settings.pencil_size = 1;
+    e.settings.stroke_smoothing = 0;
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.update_stroke((12, 2), false);
+    for x in 2..=12 {
+        assert_eq!(e.document.buffer.get(x, 2), Some(Color::BLACK), "pixel {x}");
+    }
+}
+
+#[test]
+fn smoothing_applies_to_the_brush_tool() {
+    let mut e = editor();
+    e.set_tool(Tool::Brush);
+    e.settings.brush_size = 3;
+    e.settings.stroke_smoothing = 100;
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.update_stroke((12, 2), false);
+    assert_eq!(e.document.buffer.get(12, 2), Some(Color::WHITE));
+    e.end_stroke(false);
+    assert_eq!(e.document.buffer.get(12, 2), Some(Color::BLACK));
+}
+
+#[test]
+fn smoothing_does_not_affect_shape_tools() {
+    let draw = |smoothing: u8| {
+        let mut e = editor();
+        e.set_tool(Tool::Rectangle);
+        e.settings.stroke_size = 1;
+        e.settings.stroke_smoothing = smoothing;
+        e.begin_stroke((2, 2), PointerButton::Primary);
+        e.update_stroke((12, 8), false);
+        e.end_stroke(false);
+        e.document.buffer
+    };
+    assert_eq!(draw(0), draw(100));
+}
+
+#[test]
+fn smoothing_does_not_affect_the_eraser() {
+    let draw = |smoothing: u8| {
+        let mut e = editor();
+        e.document.buffer.fill(Color::BLACK);
+        e.set_tool(Tool::Eraser);
+        e.settings.eraser_size = 3;
+        e.settings.stroke_smoothing = smoothing;
+        e.begin_stroke((2, 2), PointerButton::Primary);
+        e.update_stroke((12, 2), false);
+        e.end_stroke(false);
+        e.document.buffer
+    };
+    assert_eq!(draw(0), draw(100));
+}
+
+#[test]
+fn end_stroke_at_drains_to_the_release_point() {
+    let mut e = editor();
+    e.set_tool(Tool::Pencil);
+    e.settings.pencil_size = 1;
+    e.settings.stroke_smoothing = 100;
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.update_stroke((8, 2), false);
+    e.end_stroke_at((14, 2), false);
+    for x in 2..=14 {
+        assert_eq!(e.document.buffer.get(x, 2), Some(Color::BLACK), "pixel {x}");
+    }
+}
+
 #[test]
 fn selection_clips_drawing_without_losing_the_selection() {
     let mut e = editor();

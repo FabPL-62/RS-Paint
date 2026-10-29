@@ -301,6 +301,11 @@ impl Editor {
                 Some(mask) => mask.into_iter().map(|selected| !selected).collect(),
                 None => vec![false; count],
             };
+            self.thin_prev2 = None;
+            self.thin_prev1 = None;
+            self.thin_prev1_new = false;
+            self.smooth_position = Some((p.0 as f32, p.1 as f32));
+            self.smooth_target = Some(p);
             self.draw_freehand(p, p, color);
             self.mark_segment(p, p, self.tool_radius());
         }
@@ -314,16 +319,30 @@ impl Editor {
         if self.settings.tool.is_shape() {
             let end = self.shape_end(start, p, shift);
             self.redraw_shape(end);
-        } else {
-            self.draw_freehand(last, p, color);
-            self.mark_segment(last, p, self.tool_radius());
+            if let Some(stroke) = self.stroke.as_mut() {
+                stroke.last = p;
+            }
+            return;
         }
-        if let Some(stroke) = self.stroke.as_mut() {
-            stroke.last = p;
+        let target = self.smoothed_target(p);
+        if target != last {
+            self.draw_freehand(last, target, color);
+            self.mark_segment(last, target, self.tool_radius());
+            if let Some(stroke) = self.stroke.as_mut() {
+                stroke.last = target;
+            }
         }
     }
 
+    /// Ends the stroke at the pointer's release position, so smoothing catches
+    /// up to the exact point where the user let go.
+    pub fn end_stroke_at(&mut self, p: (i32, i32), shift: bool) {
+        self.update_stroke(p, shift);
+        self.end_stroke(shift);
+    }
+
     pub fn end_stroke(&mut self, shift: bool) {
+        self.drain_smoothing();
         // Redraw the final shape in case Shift was toggled after the last move.
         if self.settings.tool.is_shape() {
             if let Some((start, last)) = self.stroke.as_ref().map(|s| (s.start, s.last)) {
@@ -334,6 +353,85 @@ impl Editor {
         if let Some(stroke) = self.stroke.take() {
             self.commit(stroke.name);
         }
+    }
+
+    /// Whether pointer smoothing applies to the active tool.
+    fn smoothing_active(&self) -> bool {
+        self.settings.stroke_smoothing > 0
+            && matches!(self.settings.tool, Tool::Pencil | Tool::Brush)
+    }
+
+    /// Filter strength: 1 means no smoothing, smaller values lag more.
+    fn smoothing_alpha(&self) -> f32 {
+        let amount = self.settings.stroke_smoothing.min(100) as f32 / 100.0;
+        (1.0 - 0.95 * amount).clamp(0.02, 1.0)
+    }
+
+    /// Advances the smoothing filter and returns the integer point to draw.
+    fn smoothed_target(&mut self, p: (i32, i32)) -> (i32, i32) {
+        if !self.smoothing_active() {
+            self.smooth_position = None;
+            self.smooth_target = None;
+            return p;
+        }
+        let current = self.smooth_position.unwrap_or((p.0 as f32, p.1 as f32));
+        let alpha = self.smoothing_alpha();
+        let next = (
+            current.0 + (p.0 as f32 - current.0) * alpha,
+            current.1 + (p.1 as f32 - current.1) * alpha,
+        );
+        self.smooth_position = Some(next);
+        self.smooth_target = Some(p);
+        (next.0.round() as i32, next.1.round() as i32)
+    }
+
+    /// Catches the smoothed pointer up to the last raw position before the
+    /// stroke is committed, drawing the remaining path instead of jumping.
+    fn drain_smoothing(&mut self) {
+        if !self.smoothing_active() {
+            self.smooth_position = None;
+            self.smooth_target = None;
+            return;
+        }
+        let (Some(target), Some(mut current), Some((mut last, color))) = (
+            self.smooth_target,
+            self.smooth_position,
+            self.stroke.as_ref().map(|s| (s.last, s.color)),
+        ) else {
+            self.smooth_position = None;
+            self.smooth_target = None;
+            return;
+        };
+        // A stronger filter during the drain converges quickly without a
+        // visible straight jump at the end.
+        let alpha = self.smoothing_alpha().max(0.2);
+        for _ in 0..64 {
+            current.0 += (target.0 as f32 - current.0) * alpha;
+            current.1 += (target.1 as f32 - current.1) * alpha;
+            let next = (current.0.round() as i32, current.1.round() as i32);
+            if next != last {
+                self.draw_freehand(last, next, color);
+                self.mark_segment(last, next, self.tool_radius());
+                last = next;
+                if let Some(stroke) = self.stroke.as_mut() {
+                    stroke.last = next;
+                }
+            }
+            if (current.0 - target.0 as f32).abs() < 0.5
+                && (current.1 - target.1 as f32).abs() < 0.5
+            {
+                break;
+            }
+        }
+        if last != target {
+            self.draw_freehand(last, target, color);
+            self.mark_segment(last, target, self.tool_radius());
+            if let Some(stroke) = self.stroke.as_mut() {
+                stroke.last = target;
+            }
+        }
+        self.smooth_position = None;
+        self.smooth_target = None;
     }
 
     pub fn has_stroke(&self) -> bool {
@@ -348,6 +446,8 @@ impl Editor {
             self.document.buffer = base;
         }
         self.stroke_painted.clear();
+        self.smooth_position = None;
+        self.smooth_target = None;
         self.mark_full();
     }
 
@@ -394,6 +494,10 @@ impl Editor {
     pub(super) fn draw_freehand(&mut self, from: (i32, i32), to: (i32, i32), color: Color) {
         match self.settings.tool {
             Tool::Pencil => {
+                if self.settings.pencil_size == 1 && self.settings.pixel_perfect {
+                    self.draw_thin_freehand(from, to, color);
+                    return;
+                }
                 let brush = Brush::new(BrushShape::Square, self.settings.pencil_size)
                     .with_blend(self.settings.paint_blend);
                 let width = self.document.width();
@@ -408,6 +512,10 @@ impl Editor {
                 );
             }
             Tool::Brush => {
+                if self.settings.brush_size == 1 && self.settings.pixel_perfect {
+                    self.draw_thin_freehand(from, to, color);
+                    return;
+                }
                 let brush = Brush::new(self.settings.brush_shape, self.settings.brush_size)
                     .with_blend(self.settings.paint_blend);
                 let width = self.document.width();
@@ -461,6 +569,65 @@ impl Editor {
             Tool::Airbrush => self.spray(to, color),
             _ => {}
         }
+    }
+
+    /// Paints one segment of a 1 px freehand stroke, removing the middle
+    /// pixel of every L corner (pixel-perfect mode).
+    ///
+    /// Corner removal only looks at the last two kept pixels and the new one.
+    /// A pixel that was already painted before this step (a self-intersection
+    /// or a clipped pixel) is never removed, so crossings keep their pixels.
+    pub(super) fn draw_thin_freehand(&mut self, from: (i32, i32), to: (i32, i32), color: Color) {
+        let blend = self.settings.paint_blend;
+        let width = self.document.width() as i32;
+        let height = self.document.height() as i32;
+        let stride = width as usize;
+        let Some(base) = self.stroke.as_ref().and_then(|stroke| stroke.base.as_ref()) else {
+            return;
+        };
+        let buffer = &mut self.document.buffer;
+        let painted = &mut self.stroke_painted;
+        let mut prev2 = self.thin_prev2;
+        let mut prev1 = self.thin_prev1;
+        let mut prev1_new = self.thin_prev1_new;
+        let mut first = true;
+        walk_line(from, to, |x, y| {
+            // The line starts where the previous segment ended; that pixel
+            // was already processed.
+            if first {
+                first = false;
+                if Some((x, y)) == prev1 {
+                    return;
+                }
+            }
+            let mut painted_now = false;
+            if x >= 0 && y >= 0 && x < width && y < height {
+                let index = y as usize * stride + x as usize;
+                if index < painted.len() && !painted[index] {
+                    painted[index] = true;
+                    buffer.paint(x as u32, y as u32, color, blend);
+                    painted_now = true;
+                }
+            }
+            // An L corner: `prev1` sits between two diagonal neighbors.
+            // Remove it if this stroke painted it, leaving the two diagonal
+            // pixels connected and the stroke one pixel wide.
+            if prev1_new {
+                if let (Some(a), Some(b)) = (prev2, prev1) {
+                    if is_corner(a, b, (x, y)) && unpaint_thin(buffer, base, painted, stride, b) {
+                        prev1 = Some((x, y));
+                        prev1_new = painted_now;
+                        return;
+                    }
+                }
+            }
+            prev2 = prev1;
+            prev1 = Some((x, y));
+            prev1_new = painted_now;
+        });
+        self.thin_prev2 = prev2;
+        self.thin_prev1 = prev1;
+        self.thin_prev1_new = prev1_new;
     }
 
     pub(super) fn spray(&mut self, at: (i32, i32), color: Color) {
@@ -665,4 +832,49 @@ impl Editor {
             self.mark_rect(rect);
         }
     }
+}
+
+/// Whether `b` is the corner of an L made by `a` and `c`.
+///
+/// True when `a` and `c` are diagonal neighbors and `b` is one of the two
+/// orthogonal pixels between them. Removing `b` then leaves `a` and `c`
+/// connected by their shared corner.
+fn is_corner(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> bool {
+    let diagonal = (a.0 - c.0).abs() == 1 && (a.1 - c.1).abs() == 1;
+    let next_to_a = (b.0 - a.0).abs() + (b.1 - a.1).abs() == 1;
+    let next_to_c = (b.0 - c.0).abs() + (b.1 - c.1).abs() == 1;
+    diagonal && next_to_a && next_to_c
+}
+
+/// Restores a pixel removed by pixel-perfect corner correction.
+///
+/// Only pixels painted by the current stroke are restored: the pre-stroke
+/// `base` value is put back and the pixel is marked unpainted so a later part
+/// of the stroke may paint it again. Returns whether the pixel was restored.
+fn unpaint_thin(
+    buffer: &mut PixelBuffer,
+    base: &PixelBuffer,
+    painted: &mut [bool],
+    stride: usize,
+    p: (i32, i32),
+) -> bool {
+    let (x, y) = p;
+    if x < 0 || y < 0 || x as u32 >= buffer.width() || y as u32 >= buffer.height() {
+        return false;
+    }
+    let index = y as usize * stride + x as usize;
+    if index >= painted.len() || !painted[index] {
+        return false;
+    }
+    let (x, y) = (x as u32, y as u32);
+    let Some(original) = base.get(x, y) else {
+        return false;
+    };
+    if buffer.get(x, y) == Some(original) {
+        // Already equal to the pre-stroke image: not painted by this stroke.
+        return false;
+    }
+    buffer.set(x, y, original);
+    painted[index] = false;
+    true
 }

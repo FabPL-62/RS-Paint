@@ -159,12 +159,17 @@ pub fn show(app: &mut PaintApp, ctx: &egui::Context) {
 
 fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
     match app.editor.settings.tool {
-        Tool::Pencil => size_row(
-            ui,
-            crate::i18n::tr(ui.ctx(), "Size"),
-            &mut app.editor.settings.pencil_size,
-            1..=50,
-        ),
+        Tool::Pencil => {
+            size_row(
+                ui,
+                crate::i18n::tr(ui.ctx(), "Size"),
+                &mut app.editor.settings.pencil_size,
+                1..=50,
+            );
+            smoothing_row(app, ui);
+            let size = app.editor.settings.pencil_size;
+            pixel_perfect_row(app, ui, size);
+        }
         Tool::Brush => {
             shape_row(ui, &mut app.editor.settings.brush_shape, true);
             size_row(
@@ -173,6 +178,9 @@ fn tool_options(app: &mut PaintApp, ui: &mut egui::Ui) {
                 &mut app.editor.settings.brush_size,
                 1..=500,
             );
+            smoothing_row(app, ui);
+            let size = app.editor.settings.brush_size;
+            pixel_perfect_row(app, ui, size);
         }
         Tool::SelectionBrush => {
             // Diagonal brush shapes don't make sense for painting a selection.
@@ -440,6 +448,42 @@ fn size_row(ui: &mut egui::Ui, label: &str, value: &mut u32, range: std::ops::Ra
         ui.label(label);
         ui.add(egui::DragValue::new(value).range(range).speed(0.5));
     });
+}
+
+/// Pointer smoothing percentage for the Pencil and Brush tools.
+fn smoothing_row(app: &mut PaintApp, ui: &mut egui::Ui) {
+    let mut smoothing = app.editor.settings.stroke_smoothing;
+    ui.vertical(|ui| {
+        ui.label(crate::i18n::tr(ui.ctx(), "Smoothing"));
+        ui.add(egui::Slider::new(&mut smoothing, 0..=100).suffix("%"))
+            .on_hover_text(crate::i18n::tr(
+                ui.ctx(),
+                "Higher values make the stroke follow the pointer more slowly and smoothly",
+            ));
+    });
+    if smoothing != app.editor.settings.stroke_smoothing {
+        app.editor.settings.stroke_smoothing = smoothing;
+    }
+}
+
+/// Toggles pixel-perfect corner removal. Only 1 px strokes are affected, so
+/// the option is disabled for larger sizes.
+fn pixel_perfect_row(app: &mut PaintApp, ui: &mut egui::Ui, size: u32) {
+    let mut pixel_perfect = app.editor.settings.pixel_perfect;
+    ui.add_enabled(
+        size == 1,
+        egui::Checkbox::new(
+            &mut pixel_perfect,
+            crate::i18n::tr(ui.ctx(), "Pixel-perfect corners"),
+        ),
+    )
+    .on_hover_text(crate::i18n::tr(
+        ui.ctx(),
+        "Removes the extra pixel at the corners of 1 px strokes",
+    ));
+    if pixel_perfect != app.editor.settings.pixel_perfect {
+        app.editor.settings.pixel_perfect = pixel_perfect;
+    }
 }
 
 fn selection_transparency_row(app: &mut PaintApp, ui: &mut egui::Ui) {
