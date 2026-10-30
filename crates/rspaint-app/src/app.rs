@@ -66,6 +66,7 @@ pub struct PaintApp {
     color_picker: Option<ColorPicker>,
     pub swatch_hold_fired: bool,
     pub captured_palette_row: usize,
+    pub layers_ui: crate::ui::layers::LayersUiState,
     ctrl_down: bool,
     ctrl_tap_used: bool,
     pub show_history: bool,
@@ -132,6 +133,7 @@ impl PaintApp {
             color_picker: None,
             swatch_hold_fired: false,
             captured_palette_row: 0,
+            layers_ui: Default::default(),
             ctrl_down: false,
             ctrl_tap_used: false,
             show_history: false,
@@ -325,7 +327,7 @@ fn bool_f32(value: bool) -> f32 {
     }
 }
 
-fn history_depth(history: &History, id: rspaint_core::NodeId) -> usize {
+fn history_depth<T>(history: &History<T>, id: rspaint_core::NodeId) -> usize {
     let mut depth = 0;
     let mut current = id;
     while let Some(parent) = history.node(current).and_then(|node| node.parent) {

@@ -10,7 +10,8 @@ use rspaint_core::draw::{
 };
 use rspaint_core::fill::flood_fill;
 use rspaint_core::{
-    palette, transform, BlendMode, Brush, BrushShape, Color, Document, History, PixelBuffer,
+    palette, transform, BlendMode, Brush, BrushShape, Color, Document, History, LayerBlend,
+    LayerNode, LayerRow, LayerStack, PixelBuffer,
 };
 
 pub mod text;
@@ -216,7 +217,9 @@ impl ResizeHandle {
 /// An in-progress canvas resize drag.
 struct ResizeDrag {
     handle: ResizeHandle,
-    orig_buffer: PixelBuffer,
+    /// Every layer's pixels before the drag started.
+    orig_layers: Vec<LayerNode>,
+    orig_active: u64,
     orig_width: u32,
     orig_height: u32,
     /// The canvas rectangle's top-left at the start of the drag (screen space).
@@ -333,10 +336,15 @@ pub struct Editor {
     pub settings: ToolSettings,
     pub colors: DocumentColors,
     pub document: Document,
-    pub history: History,
+    pub history: History<LayerStack>,
     pub magnification: f32,
     pub pan: geometry::Vec2,
     pub file_path: Option<std::path::PathBuf>,
+    /// The layer rows selected in the panel. Always non-empty once a document
+    /// exists; it may not contain the active layer after a Ctrl+click.
+    pub layer_selection: Vec<u64>,
+    /// The row a Shift+click extends the selection from.
+    pub layer_anchor: Option<u64>,
     pub selection: Option<Selection>,
     /// The other selected areas while one of them is being moved on its own.
     /// They are merged back into `selection` when the drag ends.
@@ -524,8 +532,9 @@ impl Default for Editor {
 }
 impl Editor {
     pub fn new() -> Self {
-        let document = Document::default();
-        let history = History::new(document.buffer.clone(), "New");
+        let mut document = Document::default();
+        let history = History::new(document.layer_stack(), "New");
+        let layer_selection = vec![document.active];
         Self {
             settings: ToolSettings::default(),
             colors: DocumentColors::default(),
@@ -534,6 +543,8 @@ impl Editor {
             magnification: 1.0,
             pan: geometry::Vec2::ZERO,
             file_path: None,
+            layer_selection,
+            layer_anchor: None,
             selection: None,
             selection_rest: None,
             selection_drag_moves_content: true,
@@ -665,6 +676,7 @@ impl Editor {
 mod helpers;
 use helpers::*;
 mod drawing;
+mod layers;
 mod selection;
 mod selection_brush;
 mod selection_transform;

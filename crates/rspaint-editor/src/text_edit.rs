@@ -56,6 +56,9 @@ impl Editor {
     }
 
     pub fn begin_text_box(&mut self, p: (i32, i32)) {
+        if !self.can_paint_active() {
+            return;
+        }
         self.text_creating = Some((p, p));
     }
 
@@ -76,6 +79,9 @@ impl Editor {
     }
 
     pub fn default_text_box(&mut self, p: (i32, i32)) {
+        if !self.can_paint_active() {
+            return;
+        }
         let style = self.text_style();
         let height = crate::text::line_height(&self.fonts, style) + 8;
         self.open_text_box(p.0, p.1, 120, height);

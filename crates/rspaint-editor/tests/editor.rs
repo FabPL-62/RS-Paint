@@ -578,3 +578,212 @@ fn renderer_receives_only_pending_pixel_regions() {
     );
     assert!(e.take_pending_upload().is_none());
 }
+
+fn layer_ids(e: &Editor) -> Vec<u64> {
+    e.layers().iter().map(|node| node.id()).collect()
+}
+
+fn layer_pixel(e: &Editor, index: usize, x: u32, y: u32) -> Option<Color> {
+    e.layers()[index].layer()?.pixels.get(x, y)
+}
+
+#[test]
+fn new_document_starts_with_one_background_layer() {
+    let e = editor();
+    assert_eq!(e.layers().len(), 1);
+    assert_eq!(e.layers()[0].name(), "Background");
+    assert_eq!(e.active_layer_id(), e.layers()[0].id());
+    assert_eq!(e.document.composite.get(0, 0), Some(Color::WHITE));
+}
+
+#[test]
+fn added_layers_are_transparent_and_paint_in_front() {
+    let mut e = editor();
+    e.add_layer();
+    assert_eq!(e.layers().len(), 2);
+    let front = e.layers()[0].id();
+    assert_eq!(e.active_layer_id(), front);
+    assert_eq!(layer_pixel(&e, 0, 2, 2), Some(Color::TRANSPARENT));
+
+    e.set_tool(Tool::Pencil);
+    e.settings.pencil_size = 1;
+    e.colors.foreground = Color::BLACK;
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.end_stroke(false);
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(2, 2), Some(Color::BLACK));
+    // The background layer underneath is untouched.
+    assert_eq!(layer_pixel(&e, 1, 2, 2), Some(Color::WHITE));
+}
+
+#[test]
+fn visibility_opacity_and_order_change_the_composite() {
+    let mut e = editor();
+    e.add_layer();
+    let top = e.layers()[0].id();
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.end_stroke(false);
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(2, 2), Some(Color::BLACK));
+
+    e.set_layer_opacity(top, 50);
+    e.document.composite_all();
+    assert_eq!(
+        e.document.composite.get(2, 2),
+        Some(Color::rgb(128, 128, 128))
+    );
+
+    e.toggle_layer_visible(top);
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(2, 2), Some(Color::WHITE));
+    assert!(!e.can_paint_active());
+
+    e.toggle_layer_visible(top);
+    e.move_layer_after(top, e.layers()[1].id());
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(2, 2), Some(Color::WHITE));
+}
+
+#[test]
+fn groups_apply_their_opacity_to_all_children() {
+    let mut e = editor();
+    e.add_group();
+    let group = e.active_layer_id();
+    assert!(e.layers()[0].is_group());
+    e.add_layer();
+    let child = e.active_layer_id();
+    e.begin_stroke((3, 3), PointerButton::Primary);
+    e.end_stroke(false);
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(3, 3), Some(Color::BLACK));
+
+    e.set_layer_opacity(group, 50);
+    e.document.composite_all();
+    assert_eq!(
+        e.document.composite.get(3, 3),
+        Some(Color::rgb(128, 128, 128))
+    );
+
+    e.toggle_layer_visible(group);
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(3, 3), Some(Color::WHITE));
+    // The child is not editable while its group is hidden.
+    e.select_layer(child, false, false);
+    assert!(!e.can_paint_active());
+}
+
+#[test]
+fn multi_selection_keeps_the_first_click_active_and_merges() {
+    let mut e = editor();
+    e.add_layer();
+    let first = e.active_layer_id();
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.end_stroke(false);
+    e.add_layer();
+    let second = e.active_layer_id();
+    e.colors.foreground = Color::rgb(200, 20, 20);
+    e.begin_stroke((6, 6), PointerButton::Primary);
+    e.end_stroke(false);
+
+    e.select_layer(first, false, true);
+    assert_eq!(e.active_layer_id(), second);
+    assert_eq!(e.layer_selection().len(), 2);
+
+    e.merge_selected_layers();
+    assert_eq!(e.layers().len(), 2);
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(2, 2), Some(Color::BLACK));
+    assert_eq!(
+        e.document.composite.get(6, 6),
+        Some(Color::rgb(200, 20, 20))
+    );
+
+    e.undo();
+    assert_eq!(e.layers().len(), 3);
+}
+
+#[test]
+fn locked_layers_cannot_be_painted() {
+    let mut e = editor();
+    e.add_layer();
+    let top = e.active_layer_id();
+    e.toggle_layer_locked(top);
+    assert!(!e.can_paint_active());
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.end_stroke(false);
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(2, 2), Some(Color::WHITE));
+    e.toggle_layer_locked(top);
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.end_stroke(false);
+    e.document.composite_all();
+    assert_eq!(e.document.composite.get(2, 2), Some(Color::BLACK));
+}
+
+#[test]
+fn adding_a_layer_is_undoable_and_redoable() {
+    let mut e = editor();
+    e.add_layer();
+    assert_eq!(e.layers().len(), 2);
+    e.undo();
+    assert_eq!(e.layers().len(), 1);
+    assert_eq!(e.active_layer_id(), e.layers()[0].id());
+    e.redo();
+    assert_eq!(e.layers().len(), 2);
+}
+
+#[test]
+fn canvas_resize_applies_to_every_layer() {
+    let mut e = editor();
+    e.add_layer();
+    e.resize_document(20, 12, false);
+    assert_eq!(e.document.width(), 20);
+    assert_eq!(e.document.height(), 12);
+    for node in e.layers() {
+        let pixels = &node.layer().unwrap().pixels;
+        assert_eq!((pixels.width(), pixels.height()), (20, 12));
+    }
+    assert_eq!(
+        (e.document.composite.width(), e.document.composite.height()),
+        (20, 12)
+    );
+}
+
+#[test]
+fn color_picker_samples_the_composite() {
+    let mut e = editor();
+    e.add_layer();
+    e.begin_stroke((4, 4), PointerButton::Primary);
+    e.end_stroke(false);
+    e.set_tool(Tool::PickColor);
+    e.click_tool((4, 4), PointerButton::Primary, false);
+    assert_eq!(e.colors.foreground, Color::BLACK);
+}
+
+#[test]
+fn rename_and_group_expansion_are_public_state() {
+    let mut e = editor();
+    let background = e.active_layer_id();
+    e.rename_layer(background, "Base");
+    assert_eq!(e.layers()[0].name(), "Base");
+    e.add_group();
+    let group = e.active_layer_id();
+    assert!(e.layer_node(group).unwrap().expanded());
+    e.toggle_group_expanded(group);
+    assert!(!e.layer_node(group).unwrap().expanded());
+    assert_eq!(layer_ids(&e).len(), 2);
+}
+
+#[test]
+fn uploads_flatten_the_layer_stack() {
+    let mut e = editor();
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.end_stroke(false);
+    // A new transparent layer becomes active; the canvas must still show the
+    // black pixel painted on the background underneath.
+    e.add_layer();
+    let upload = e.take_pending_upload().unwrap();
+    assert_eq!(upload.width, 16);
+    let index = ((2 * 16 + 2) * 4) as usize;
+    assert_eq!(&upload.data[index..index + 4], &[0, 0, 0, 255]);
+}

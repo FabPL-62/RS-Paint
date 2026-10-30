@@ -2,6 +2,9 @@ use super::*;
 
 impl Editor {
     pub fn clear_image(&mut self) {
+        if !self.can_paint_active() {
+            return;
+        }
         let color = self.canvas_clear_color();
         self.document.buffer.fill(color);
         self.commit("Clear Image");
@@ -71,6 +74,9 @@ impl Editor {
     }
 
     pub fn finish_polygon(&mut self) {
+        if !self.can_paint_active() {
+            return;
+        }
         let points = std::mem::take(&mut self.polygon_points);
         self.polygon_preview = None;
         if points.len() < 2 {
@@ -113,6 +119,9 @@ impl Editor {
     }
 
     pub fn curve_pointer_down(&mut self, p: (i32, i32)) {
+        if !self.can_paint_active() {
+            return;
+        }
         if self.curve_points.is_empty() {
             self.curve_base = Some(self.document.buffer.clone());
             self.curve_points.push(p);
@@ -246,6 +255,9 @@ impl Editor {
     }
 
     pub fn begin_stroke(&mut self, p: (i32, i32), button: PointerButton) {
+        if !self.can_paint_active() {
+            return;
+        }
         let color = self.active_color(button);
         self.note_used_color(color);
         // The fill color is the opposite of the stroke color (right-drag swaps).
@@ -712,6 +724,9 @@ impl Editor {
     }
 
     pub fn click_tool(&mut self, p: (i32, i32), button: PointerButton, shift: bool) {
+        if self.settings.tool == Tool::Fill && !self.can_paint_active() {
+            return;
+        }
         match self.settings.tool {
             Tool::Fill => {
                 let color = self.active_color(button);
@@ -741,7 +756,7 @@ impl Editor {
             }
             Tool::PickColor => {
                 if p.0 >= 0 && p.1 >= 0 {
-                    if let Some(color) = self.document.buffer.get(p.0 as u32, p.1 as u32) {
+                    if let Some(color) = self.document.flattened_pixel(p.0, p.1) {
                         if button == PointerButton::Secondary {
                             self.colors.background = color;
                         } else {

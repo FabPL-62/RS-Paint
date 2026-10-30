@@ -177,7 +177,7 @@ impl PaintApp {
             .and_then(|extension| extension.to_str())
             .map(rspaint_core::io::SaveFormat::from_extension)
             .unwrap_or(rspaint_core::io::SaveFormat::Png);
-        match rspaint_core::io::encode(&self.editor.document.buffer, format) {
+        match rspaint_core::io::encode(self.editor.document.flattened(), format) {
             Ok(bytes) => match std::fs::write(path, bytes) {
                 Ok(()) => {
                     self.editor.mark_saved(path.to_path_buf());

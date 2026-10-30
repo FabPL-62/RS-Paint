@@ -40,11 +40,35 @@ impl Editor {
     pub fn reset_document(&mut self) {
         self.document = Document::default();
         self.colors = DocumentColors::default();
-        self.history = History::new(self.document.buffer.clone(), "New");
+        let stack = self.document.layer_stack();
+        self.history = History::new(stack, "New");
+        self.layer_selection = vec![self.document.active];
+        self.layer_anchor = None;
         self.clear_interaction();
         self.file_path = None;
         self.adjust_zoom();
         self.mark_full();
+    }
+
+    /// Keeps the layer panel selection valid after a document or history change.
+    fn reset_layer_selection(&mut self) {
+        let active = self.document.active;
+        let layers = &self.document.layers;
+        if rspaint_core::layer::find_node(layers, active).is_none() {
+            self.document.active = layers.first().map(|node| node.id()).unwrap_or(active);
+        }
+        let active = self.document.active;
+        self.layer_selection
+            .retain(|id| rspaint_core::layer::find_node(&self.document.layers, *id).is_some());
+        if self.layer_selection.is_empty() {
+            self.layer_selection.push(active);
+        }
+        if self
+            .layer_anchor
+            .is_some_and(|id| rspaint_core::layer::find_node(&self.document.layers, id).is_none())
+        {
+            self.layer_anchor = None;
+        }
     }
 
     pub fn undo(&mut self) {
@@ -63,7 +87,9 @@ impl Editor {
             return;
         }
         if self.history.undo() {
-            self.document.buffer = self.history.current_snapshot().clone();
+            let stack = self.history.current_snapshot().clone();
+            self.document.restore(stack);
+            self.reset_layer_selection();
             self.document.modified = true;
             self.mark_full();
         }
@@ -72,7 +98,9 @@ impl Editor {
     pub fn redo(&mut self) {
         self.selection_undo.clear();
         if self.history.redo() {
-            self.document.buffer = self.history.current_snapshot().clone();
+            let stack = self.history.current_snapshot().clone();
+            self.document.restore(stack);
+            self.reset_layer_selection();
             self.document.modified = true;
             self.mark_full();
         }
@@ -80,15 +108,17 @@ impl Editor {
 
     pub fn jump_to_history(&mut self, id: rspaint_core::NodeId) {
         if self.history.jump_to(id) {
-            self.document.buffer = self.history.current_snapshot().clone();
+            let stack = self.history.current_snapshot().clone();
+            self.document.restore(stack);
+            self.reset_layer_selection();
             self.document.modified = true;
             self.mark_full();
         }
     }
 
     pub fn commit(&mut self, name: &str) {
-        self.history
-            .commit(name.to_string(), self.document.buffer.clone());
+        let stack = self.document.layer_stack();
+        self.history.commit(name.to_string(), stack);
         self.document.modified = true;
     }
 
@@ -100,7 +130,7 @@ impl Editor {
         let transparent = buffer.data().chunks_exact(4).any(|pixel| pixel[3] < 255);
         self.colors = DocumentColors::default();
         self.colors.background = buffer.get(0, 0).unwrap_or(Color::WHITE);
-        self.document.buffer = buffer;
+        self.document.replace_pixels(buffer);
         self.document.transparent = transparent;
         self.document.modified = false;
         self.document.name = path
@@ -108,13 +138,19 @@ impl Editor {
             .and_then(file_stem)
             .unwrap_or_else(|| String::from("Untitled"));
         self.file_path = path;
-        self.history = History::new(self.document.buffer.clone(), "Open");
+        let stack = self.document.layer_stack();
+        self.history = History::new(stack, "Open");
+        self.layer_selection = vec![self.document.active];
+        self.layer_anchor = None;
         self.clear_interaction();
         self.adjust_zoom();
         self.mark_full();
     }
 
     pub fn replace_primary_with_secondary(&mut self) {
+        if !self.can_paint_active() {
+            return;
+        }
         let from = self.colors.foreground;
         let to = self.colors.background;
         if from == to {
@@ -170,6 +206,9 @@ impl Editor {
     }
 
     pub fn apply_outliner(&mut self) {
+        if !self.can_paint_active() {
+            return;
+        }
         let Some(selection) = self.selection.as_ref() else {
             return;
         };
@@ -354,6 +393,9 @@ impl Editor {
     }
 
     pub fn invert_colors(&mut self) {
+        if !self.can_paint_active() {
+            return;
+        }
         let inverted = transform::invert(&self.document.buffer);
         self.document.buffer = inverted;
         self.mark_full();
@@ -364,6 +406,9 @@ impl Editor {
     where
         F: Fn(&PixelBuffer) -> PixelBuffer,
     {
+        if !self.can_paint_active() {
+            return;
+        }
         let Some(selection) = self.selection.take() else {
             return;
         };
@@ -453,8 +498,8 @@ impl Editor {
         };
         self.selection = None;
         self.creating_selection = None;
-        let cropped = transform::crop(&self.document.buffer, x, y, width, height);
-        self.document.buffer = cropped;
+        self.document
+            .map_pixels(|buffer| transform::crop(buffer, x, y, width, height));
         self.pan = geometry::Vec2::ZERO;
         self.mark_full();
         self.commit("Crop");
@@ -463,6 +508,7 @@ impl Editor {
     pub(super) fn mark_full(&mut self) {
         self.canvas_dirty = true;
         self.dirty_rect = None;
+        self.document.active_revision = self.document.active_revision.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -471,6 +517,7 @@ impl Editor {
             Some(existing) => existing.union(rect),
             None => rect,
         });
+        self.document.active_revision = self.document.active_revision.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -485,12 +532,13 @@ impl Editor {
         if self.canvas_dirty {
             self.canvas_dirty = false;
             self.dirty_rect = None;
+            self.document.composite_all();
             return Some(Upload {
                 x: 0,
                 y: 0,
                 width,
                 height,
-                data: self.document.buffer.shared_data(),
+                data: self.document.composite.shared_data(),
             });
         }
 
@@ -500,25 +548,27 @@ impl Editor {
         } else {
             rect.clamped(width, height)?
         };
+        self.document.composite_rect(x, y, w, h);
         Some(Upload {
             x,
             y,
             width: w,
             height: h,
-            data: std::sync::Arc::new(self.document.buffer.region_rgba(x, y, w, h)),
+            data: std::sync::Arc::new(self.document.composite.region_rgba(x, y, w, h)),
         })
     }
 
     pub fn resize_document(&mut self, width: u32, height: u32, transparent: bool) {
         let width = width.max(1);
         let height = height.max(1);
-        let fill = if transparent {
+        let fill = if transparent || self.document.layers.len() > 1 {
             Color::TRANSPARENT
         } else {
             self.colors.background
         };
         if width != self.document.width() || height != self.document.height() {
-            self.document.buffer = self.document.buffer.resized(width, height, fill);
+            self.document
+                .map_pixels(|buffer| buffer.resized(width, height, fill));
         }
         if let Some((x, y)) = self.selection.as_ref().map(|s| (s.x, s.y)) {
             self.reanchor_selection_after_resize(x, y);
@@ -548,7 +598,7 @@ impl Editor {
         if self.selection.is_some() {
             self.transform_selection(apply, name);
         } else {
-            self.document.buffer = apply(&self.document.buffer);
+            self.document.map_pixels(apply);
             self.pan = geometry::Vec2::ZERO;
             self.mark_full();
             self.commit(name);
@@ -560,7 +610,7 @@ impl Editor {
         let y_scale = (stretch_y / 100.0).max(0.01);
         let h_skew = skew_h.to_radians();
         let v_skew = skew_v.to_radians();
-        let fill = if self.document.transparent {
+        let fill = if self.document.transparent || self.document.layers.len() > 1 {
             Color::TRANSPARENT
         } else {
             self.colors.background
@@ -579,7 +629,7 @@ impl Editor {
         if self.selection.is_some() {
             self.transform_selection(apply, name);
         } else {
-            self.document.buffer = apply(&self.document.buffer);
+            self.document.map_pixels(apply);
             self.pan = geometry::Vec2::ZERO;
             self.mark_full();
             self.commit(name);

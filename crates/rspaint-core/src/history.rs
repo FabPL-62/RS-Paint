@@ -4,33 +4,31 @@
 //! creates a new branch instead of discarding the previous redo states. Each
 //! node stores a full image snapshot (region deltas are a future optimization).
 
-use crate::buffer::PixelBuffer;
-
 /// Identifier of a node within a [`History`].
 pub type NodeId = usize;
 
 /// A single state in the history tree.
 #[derive(Clone, Debug)]
-pub struct HistoryNode {
+pub struct HistoryNode<T> {
     pub id: NodeId,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     /// Human-readable action name, e.g. `"Pencil"`.
     pub name: String,
     /// The image state *after* this action.
-    pub snapshot: PixelBuffer,
+    pub snapshot: T,
 }
 
 /// A branching history of image states.
 #[derive(Clone, Debug)]
-pub struct History {
-    nodes: Vec<HistoryNode>,
+pub struct History<T> {
+    nodes: Vec<HistoryNode<T>>,
     current: NodeId,
 }
 
-impl History {
+impl<T> History<T> {
     /// Creates a history with a single root state.
-    pub fn new(initial: PixelBuffer, name: impl Into<String>) -> Self {
+    pub fn new(initial: T, name: impl Into<String>) -> Self {
         let root = HistoryNode {
             id: 0,
             parent: None,
@@ -50,7 +48,7 @@ impl History {
     }
 
     /// The image at the current state.
-    pub fn current_snapshot(&self) -> &PixelBuffer {
+    pub fn current_snapshot(&self) -> &T {
         &self.nodes[self.current].snapshot
     }
 
@@ -60,17 +58,17 @@ impl History {
     }
 
     /// Looks up a node by id.
-    pub fn node(&self, id: NodeId) -> Option<&HistoryNode> {
+    pub fn node(&self, id: NodeId) -> Option<&HistoryNode<T>> {
         self.nodes.get(id)
     }
 
     /// All nodes, in creation order.
-    pub fn nodes(&self) -> &[HistoryNode] {
+    pub fn nodes(&self) -> &[HistoryNode<T>] {
         &self.nodes
     }
 
     /// Records a new state as a child of the current one and makes it current.
-    pub fn commit(&mut self, name: impl Into<String>, snapshot: PixelBuffer) -> NodeId {
+    pub fn commit(&mut self, name: impl Into<String>, snapshot: T) -> NodeId {
         let id = self.nodes.len();
         let parent = self.current;
         self.nodes.push(HistoryNode {
@@ -146,6 +144,7 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffer::PixelBuffer;
     use crate::color::Color;
 
     fn solid(color: Color) -> PixelBuffer {

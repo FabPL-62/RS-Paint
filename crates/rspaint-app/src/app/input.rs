@@ -15,6 +15,12 @@ impl PaintApp {
     }
 
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // The layer rename field owns the keyboard while it is open; the
+        // panel handles Escape itself.
+        if !self.empty_host && self.layers_ui.is_renaming() {
+            self.ctrl_down = ctx.input(|i| i.modifiers.command);
+            return;
+        }
         let ctrl_shift = Modifiers {
             ctrl: true,
             shift: true,

@@ -40,7 +40,7 @@ const TOOLBOX_MARGIN: f32 = 7.0;
 /// Tool box width: the buttons plus both margins.
 const TOOLBOX_WIDTH: f32 = TOOL_BUTTON + 2.0 * TOOLBOX_MARGIN;
 /// Tool options sidebar width.
-const OPTIONS_WIDTH: f32 = 200.0;
+const OPTIONS_WIDTH: f32 = 250.0;
 
 /// Draws the tool selection buttons in a single column.
 pub fn show_tools(app: &mut PaintApp, ctx: &egui::Context) {
@@ -79,6 +79,20 @@ pub fn show_options(app: &mut PaintApp, ctx: &egui::Context) {
         .resizable(false)
         .exact_width(OPTIONS_WIDTH)
         .show(ctx, |ui| {
+            // The layer section keeps its own resizable area at the bottom, so
+            // long option lists scroll without pushing the layers away.
+            egui::TopBottomPanel::bottom("layers-section")
+                .resizable(true)
+                .default_height(300.0)
+                .min_height(150.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(6, 4)),
+                )
+                .show_inside(ui, |ui| {
+                    crate::ui::layers::show(app, ui);
+                });
             // Keep the content inside the fixed panel width: without this, a
             // wide options row grows the panel's measured rect and leaves an
             // unpainted gap between the canvas and the sidebar.

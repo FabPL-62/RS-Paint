@@ -378,7 +378,7 @@ impl Editor {
     }
 
     pub(super) fn delete_selection_named(&mut self, name: &str) {
-        if self.selection.is_none() {
+        if self.selection.is_none() || !self.can_paint_active() {
             return;
         }
         self.selection_undo.push((

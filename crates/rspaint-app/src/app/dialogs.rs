@@ -15,7 +15,7 @@ impl PaintApp {
                 let c = self
                     .editor
                     .document
-                    .buffer
+                    .composite
                     .get(sx, sy)
                     .unwrap_or(Color::TRANSPARENT);
                 bytes.extend_from_slice(&[c.r, c.g, c.b, c.a]);
@@ -230,6 +230,7 @@ impl PaintApp {
             return;
         }
         if self.thumbnail_revision != self.editor.revision() || self.thumbnail.is_none() {
+            self.editor.document.composite_all();
             let (size, bytes) = self.scaled_rgba(108.0, 92.0);
             let image = egui::ColorImage::from_rgba_unmultiplied(size, &bytes);
             match &mut self.thumbnail {

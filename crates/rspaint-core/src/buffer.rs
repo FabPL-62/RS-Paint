@@ -180,6 +180,24 @@ impl PixelBuffer {
         }
     }
 
+    /// Copies a whole buffer into this one at `(x, y)`, clipping to the edges.
+    pub fn blit(&mut self, src: &Self, x: u32, y: u32) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let w = src.width.min(self.width - x);
+        let h = src.height.min(self.height - y);
+        let len = w as usize * 4;
+        let width = self.width as usize;
+        let x = x as usize;
+        let dst = Arc::make_mut(&mut self.data);
+        for row in 0..h {
+            let source = src.index(0, row);
+            let start = ((y + row) as usize * width + x) * 4;
+            dst[start..start + len].copy_from_slice(&src.data[source..source + len]);
+        }
+    }
+
     /// Returns a copy resized to `width` x `height`, keeping the top-left
     /// overlap and filling any new area with `fill`.
     pub fn resized(&self, width: u32, height: u32, fill: Color) -> Self {

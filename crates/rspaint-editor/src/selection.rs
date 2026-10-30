@@ -397,6 +397,9 @@ impl Editor {
         subtract: bool,
         move_content: bool,
     ) {
+        // A locked or hidden layer still allows moving the selection outline,
+        // but not the pixels underneath it.
+        let move_content = move_content && self.can_paint_active();
         let combining = add || subtract;
         if !combining && self.point_in_selection(p) {
             self.start_moving_selection(p, move_content);
@@ -1025,6 +1028,9 @@ impl Editor {
         mask: bool,
         name: &'static str,
     ) {
+        if !self.can_paint_active() {
+            return;
+        }
         self.deselect();
         let width = pixels.width();
         let height = pixels.height();
