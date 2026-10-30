@@ -2486,6 +2486,7 @@ dependencies = [
  "eframe",
  "egui",
  "image",
+ "pollster",
  "rfd",
  "rspaint-core",
  "rspaint-editor",
