@@ -77,7 +77,6 @@ impl Editor {
                 self.commit_text();
                 self.selection_undo.clear();
                 self.document.activate(id);
-                self.mark_full();
             }
             self.layer_selection = vec![id];
             self.layer_anchor = Some(id);
@@ -330,7 +329,6 @@ impl Editor {
             return;
         }
         node.set_name(name);
-        self.mark_full();
         self.commit("Rename Layer");
     }
 

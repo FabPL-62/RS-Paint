@@ -2,7 +2,8 @@
 //!
 //! Mirrors JS Paint's history *tree*: undoing and then doing something new
 //! creates a new branch instead of discarding the previous redo states. Each
-//! node stores a full image snapshot (region deltas are a future optimization).
+//! node stores an immutable state. Pixel sharing/encoding is provided by the
+//! snapshot type, independently of tree navigation.
 
 /// Identifier of a node within a [`History`].
 pub type NodeId = usize;

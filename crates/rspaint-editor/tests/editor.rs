@@ -583,6 +583,268 @@ fn layer_ids(e: &Editor) -> Vec<u64> {
     e.layers().iter().map(|node| node.id()).collect()
 }
 
+#[test]
+fn curve_previews_restore_old_pixels_and_upload_only_the_affected_region() {
+    let mut e = editor();
+    e.load_buffer(PixelBuffer::new(128, 128, Color::WHITE), None);
+    e.settings.stroke_size = 3;
+    e.take_pending_upload();
+    let base = e.document.buffer.clone();
+    e.curve_pointer_down((20, 20));
+    e.curve_pointer_move((50, 50));
+    e.take_pending_upload();
+    e.curve_pointer_move((30, 20));
+    assert_eq!(e.document.buffer.get(49, 49), base.get(49, 49));
+    let upload = e.take_pending_upload().unwrap();
+    assert!(upload.width < 128 && upload.height < 128);
+    e.curve_pointer_up();
+    e.curve_pointer_down((25, 45));
+    e.curve_pointer_move((25, 35));
+    e.curve_pointer_up();
+    e.curve_pointer_down((35, 40));
+    e.curve_pointer_move((40, 30));
+    let brush = rspaint_core::Brush::new(rspaint_core::BrushShape::Square, 3)
+        .with_blend(e.settings.paint_blend);
+    let mut expected = base.clone();
+    rspaint_core::draw::draw_bezier(
+        &mut expected,
+        (20, 20),
+        (25, 35),
+        (40, 30),
+        (30, 20),
+        &brush,
+        e.colors.foreground,
+    );
+    assert_eq!(e.document.buffer, expected);
+    e.take_pending_upload();
+    e.curve_cancel();
+    assert_eq!(e.document.buffer, base);
+    let upload = e.take_pending_upload().unwrap();
+    assert!(upload.width < 128 && upload.height < 128);
+    assert_eq!(e.document.composite, base);
+}
+
+#[test]
+fn layer_metadata_and_activation_do_not_upload_unchanged_pixels() {
+    let mut e = editor();
+    let background = e.active_layer_id();
+    e.add_layer();
+    e.take_pending_upload();
+    e.rename_layer(e.active_layer_id(), "Renamed");
+    assert!(e.take_pending_upload().is_none());
+    e.select_layer(background, false, false);
+    assert!(e.take_pending_upload().is_none());
+    e.begin_stroke((8, 8), PointerButton::Primary);
+    e.end_stroke(false);
+    assert!(e.take_pending_upload().is_some());
+}
+
+#[test]
+fn composition_cache_follows_undo_redo_branches_and_resize() {
+    fn check(e: &mut Editor) {
+        e.take_pending_upload();
+        let mut expected = PixelBuffer::transparent(e.document.width(), e.document.height());
+        rspaint_core::layer::composite_region(
+            &e.document.layers,
+            e.document.active,
+            &e.document.buffer,
+            rspaint_core::layer::Region::new(0, 0, e.document.width(), e.document.height()),
+            &mut expected,
+        );
+        assert_eq!(e.document.composite, expected);
+    }
+    let mut e = editor();
+    e.load_buffer(PixelBuffer::new(130, 70, Color::WHITE), None);
+    e.add_layer();
+    e.begin_stroke((65, 32), PointerButton::Primary);
+    e.end_stroke(false);
+    check(&mut e);
+    e.undo();
+    check(&mut e);
+    e.redo();
+    check(&mut e);
+    e.undo();
+    e.colors.foreground = Color::rgb(50, 100, 150);
+    e.begin_stroke((64, 33), PointerButton::Primary);
+    e.end_stroke(false);
+    check(&mut e);
+    e.resize_document(67, 33, true);
+    check(&mut e);
+    e.undo();
+    check(&mut e);
+    e.resize_document(194, 129, true);
+    check(&mut e);
+}
+
+#[test]
+fn block_history_preserves_sibling_branches_and_large_transforms() {
+    let mut e = editor();
+    let mut original = PixelBuffer::transparent(259, 131);
+    original.set(127, 127, Color::BLACK);
+    original.set(258, 130, Color::rgba(30, 60, 90, 120));
+    e.load_buffer(original.clone(), None);
+    let root = e.history.current();
+    e.document.buffer.set(128, 128, Color::BLACK);
+    e.commit("First pixel");
+    let first_id = e.history.current();
+    let first = e.document.buffer.clone();
+    e.document.buffer.set(256, 130, Color::BLACK);
+    e.commit("Second pixel");
+    let second_id = e.history.current();
+    let second = e.document.buffer.clone();
+    e.undo();
+    assert_eq!(e.document.buffer, first);
+    e.document.buffer.set(0, 0, Color::BLACK);
+    e.commit("Branch");
+    let branch_id = e.history.current();
+    let branch = e.document.buffer.clone();
+    assert_eq!(e.history.node(first_id).unwrap().children.len(), 2);
+    e.jump_to_history(second_id);
+    assert_eq!(e.document.buffer, second);
+    e.jump_to_history(branch_id);
+    assert_eq!(e.document.buffer, branch);
+    e.rename_layer(e.active_layer_id(), "Renamed");
+    e.undo();
+    assert_eq!(e.document.buffer, branch);
+    e.resize_document(131, 259, true);
+    let resized = e.document.buffer.clone();
+    e.undo();
+    assert_eq!(e.document.buffer, branch);
+    e.redo();
+    assert_eq!(e.document.buffer, resized);
+    e.jump_to_history(root);
+    assert_eq!(e.document.buffer, original);
+    e.jump_to_history(second_id);
+    assert_eq!(e.document.buffer, second);
+}
+
+#[test]
+fn local_previews_preserve_working_allocation_and_cancel_exactly() {
+    let mut e = editor();
+    e.load_buffer(PixelBuffer::new(513, 259, Color::WHITE), None);
+    drop(e.take_pending_upload());
+    for tool in [
+        Tool::Pencil,
+        Tool::Brush,
+        Tool::Eraser,
+        Tool::Line,
+        Tool::Rectangle,
+        Tool::Ellipse,
+        Tool::RoundedRectangle,
+        Tool::Curve,
+        Tool::Text,
+    ] {
+        e.set_tool(tool);
+        let address = e.document.buffer.data().as_ptr();
+        match tool {
+            Tool::Curve => {
+                e.curve_pointer_down((127, 127));
+                e.curve_pointer_move((258, 258));
+                e.curve_pointer_up();
+                e.curve_pointer_down((-5, 130));
+                e.curve_pointer_move((200, 100));
+            }
+            Tool::Text => {
+                e.begin_text_box((127, 127));
+                e.update_text_box((258, 190));
+                e.finish_text_box();
+                e.text_type("Hola");
+                e.render_text_preview();
+                e.text_backspace();
+                e.render_text_preview();
+            }
+            _ => {
+                e.begin_stroke((127, 127), PointerButton::Primary);
+                e.update_stroke((258, 258), false);
+                e.update_stroke((129, 130), false);
+            }
+        }
+        assert_eq!(address, e.document.buffer.data().as_ptr(), "{tool:?}");
+        match tool {
+            Tool::Curve => e.curve_cancel(),
+            Tool::Text => e.cancel_text(),
+            _ => e.cancel_stroke(),
+        }
+        assert_eq!(
+            e.document.buffer,
+            PixelBuffer::new(513, 259, Color::WHITE),
+            "cancel {tool:?}"
+        );
+        assert_eq!(
+            e.layer_pixels(e.active_layer_id()).unwrap().size(),
+            [513, 259]
+        );
+    }
+    // A genuine external snapshot must retain normal copy-on-write isolation.
+    let external = e.document.buffer.clone();
+    e.set_tool(Tool::Pencil);
+    e.begin_stroke((128, 128), PointerButton::Primary);
+    assert_eq!(external.get(128, 128), Some(Color::WHITE));
+    assert_eq!(e.document.buffer.get(128, 128), Some(Color::BLACK));
+    e.cancel_stroke();
+    assert_eq!(external, e.document.buffer);
+}
+
+#[test]
+fn local_curve_and_text_backups_commit_and_restore_through_history() {
+    let mut e = editor();
+    e.load_buffer(PixelBuffer::new(259, 131, Color::WHITE), None);
+    e.set_tool(Tool::Curve);
+    e.curve_pointer_down((127, 30));
+    e.curve_pointer_move((258, 130));
+    e.curve_pointer_up();
+    e.curve_pointer_down((200, 0));
+    e.curve_pointer_up();
+    e.curve_pointer_down((140, 100));
+    e.curve_pointer_up();
+    let curve = e.document.buffer.clone();
+    e.undo();
+    assert_eq!(e.document.buffer, PixelBuffer::new(259, 131, Color::WHITE));
+    e.redo();
+    assert_eq!(e.document.buffer, curve);
+    e.set_tool(Tool::Text);
+    e.begin_text_box((120, 80));
+    e.update_text_box((250, 130));
+    e.finish_text_box();
+    e.text_type("Hola");
+    e.render_text_preview();
+    e.commit_text();
+    let text = e.document.buffer.clone();
+    assert_ne!(curve, text);
+    assert_eq!(
+        e.layer_node(e.active_layer_id()).unwrap().pixel_size(),
+        Some((259, 131))
+    );
+    e.undo();
+    assert_eq!(e.document.buffer, curve);
+    e.redo();
+    assert_eq!(e.document.buffer, text);
+}
+
+#[test]
+fn regional_curve_preview_preserves_selection_clipping_and_canvas_edges() {
+    let mut e = editor();
+    select(&mut e, (2, 2), (8, 8));
+    e.set_tool(Tool::Curve);
+    e.settings.stroke_size = 5;
+    e.take_pending_upload();
+    let base = e.document.buffer.clone();
+    e.curve_pointer_down((-4, 4));
+    e.curve_pointer_move((20, 4));
+    e.take_pending_upload();
+    e.curve_pointer_move((6, 4));
+    assert_eq!(e.document.buffer.get(4, 4), Some(Color::BLACK));
+    for y in 0..16 {
+        for x in 0..16 {
+            if !(2..=8).contains(&x) || !(2..=8).contains(&y) {
+                assert_eq!(e.document.buffer.get(x, y), base.get(x, y));
+            }
+        }
+    }
+    e.curve_cancel();
+    assert_eq!(e.document.buffer, base);
+}
+
 fn layer_pixel(e: &Editor, index: usize, x: u32, y: u32) -> Option<Color> {
     e.layers()[index].layer()?.pixels.get(x, y)
 }

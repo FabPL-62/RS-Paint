@@ -123,7 +123,9 @@ impl Editor {
             return;
         }
         if self.curve_points.is_empty() {
-            self.curve_base = Some(self.document.buffer.clone());
+            self.curve_preview_rect = None;
+            self.document.prepare_active_edit();
+            self.curve_base = Some(PreviewBackup::new(&self.document.buffer));
             self.curve_points.push(p);
             self.curve_points.push(p);
         } else {
@@ -147,6 +149,7 @@ impl Editor {
         self.curve_dragging = false;
         if self.curve_points.len() >= 4 {
             self.curve_base = None;
+            self.curve_preview_rect = None;
             self.curve_points.clear();
             self.note_used_color(self.colors.foreground);
             self.commit("Curve");
@@ -158,21 +161,37 @@ impl Editor {
             return;
         }
         if let Some(base) = self.curve_base.take() {
-            self.document.buffer = base;
-            self.mark_full();
+            base.restore_all(&mut self.document.buffer);
+            self.document.sync_active();
+            if let Some(rect) = self.curve_preview_rect.take() {
+                self.mark_rect(rect);
+            }
         }
         self.curve_points.clear();
         self.curve_dragging = false;
     }
 
     pub(super) fn curve_redraw(&mut self) {
-        let Some(base) = self.curve_base.as_ref() else {
+        self.document.prepare_active_edit();
+        let Some(base) = self.curve_base.as_mut() else {
             return;
         };
-        let (width, height) = (self.document.width(), self.document.height());
-        self.document
-            .buffer
-            .copy_region_from(base, 0, 0, width, height);
+        // Curves stay within their control-point hull, plus the brush footprint.
+        let Some(&first) = self.curve_points.first() else {
+            return;
+        };
+        let new_rect = self
+            .curve_points
+            .iter()
+            .fold(RectI::between(first, first), |rect, &p| {
+                rect.union(RectI::between(p, p))
+            })
+            .expand(self.settings.stroke_size as i32 + 1);
+        let restore = self
+            .curve_preview_rect
+            .map_or(new_rect, |old| old.union(new_rect));
+        base.capture(&self.document.buffer, new_rect);
+        base.restore(&mut self.document.buffer, restore);
         let brush = Brush::new(BrushShape::Square, self.settings.stroke_size)
             .with_blend(self.settings.paint_blend);
         let color = self.colors.foreground;
@@ -191,15 +210,10 @@ impl Editor {
             _ => {}
         }
         if let Some(base) = self.curve_base.clone() {
-            let rect = RectI {
-                x0: 0,
-                y0: 0,
-                x1: width as i32 - 1,
-                y1: height as i32 - 1,
-            };
-            self.clip_region_to_selection(&base, rect);
+            self.clip_region_to_selection(&base, new_rect);
         }
-        self.mark_full();
+        self.curve_preview_rect = Some(new_rect);
+        self.mark_rect(restore);
     }
 
     pub fn transform_selection_direct(&mut self, choice: FlipRotate) {
@@ -267,8 +281,13 @@ impl Editor {
             self.colors.background
         };
         let tool = self.settings.tool;
+        if tool.is_shape() || tool.is_freehand() {
+            self.document.prepare_active_edit();
+        }
         if tool.is_shape() {
             let preview_rect = RectI::between(p, p).expand(self.settings.stroke_size as i32 + 1);
+            let mut base = PreviewBackup::new(&self.document.buffer);
+            base.capture(&self.document.buffer, preview_rect);
             self.stroke = Some(Stroke {
                 color,
                 fill_color,
@@ -276,7 +295,7 @@ impl Editor {
                 last: p,
                 name: tool.name(),
                 color_eraser: false,
-                base: Some(self.document.buffer.clone()),
+                base: Some(base),
                 preview_rect: Some(preview_rect),
             });
             self.draw_shape(p, p, color, fill_color);
@@ -297,7 +316,7 @@ impl Editor {
                     tool.name()
                 },
                 color_eraser,
-                base: Some(self.document.buffer.clone()),
+                base: Some(PreviewBackup::new(&self.document.buffer)),
                 preview_rect: None,
             });
             // Fresh per-stroke mask so a single pass paints each pixel once.
@@ -454,13 +473,17 @@ impl Editor {
         let Some(stroke) = self.stroke.take() else {
             return;
         };
+        let dirty = stroke.base.as_ref().and_then(|base| base.bounds);
         if let Some(base) = stroke.base {
-            self.document.buffer = base;
+            base.restore_all(&mut self.document.buffer);
+            self.document.sync_active();
         }
         self.stroke_painted.clear();
         self.smooth_position = None;
         self.smooth_target = None;
-        self.mark_full();
+        if let Some(rect) = dirty {
+            self.mark_rect(rect);
+        }
     }
 
     pub(super) fn shape_end(&self, start: (i32, i32), p: (i32, i32), shift: bool) -> (i32, i32) {
@@ -475,6 +498,7 @@ impl Editor {
     }
 
     pub(super) fn redraw_shape(&mut self, end: (i32, i32)) {
+        self.document.prepare_active_edit();
         let Some((start, color, fill)) = self
             .stroke
             .as_ref()
@@ -488,10 +512,9 @@ impl Editor {
             Some(previous) => previous.union(new_rect),
             None => new_rect,
         };
-        if let Some((x, y, w, h)) = restore.clamped(self.document.width(), self.document.height()) {
-            if let Some(base) = self.stroke.as_ref().and_then(|s| s.base.as_ref()) {
-                self.document.buffer.copy_region_from(base, x, y, w, h);
-            }
+        if let Some(base) = self.stroke.as_mut().and_then(|s| s.base.as_mut()) {
+            base.capture(&self.document.buffer, new_rect);
+            base.restore(&mut self.document.buffer, restore);
         }
         self.draw_shape(start, end, color, fill);
         if let Some(base) = self.stroke.as_ref().and_then(|stroke| stroke.base.clone()) {
@@ -504,6 +527,11 @@ impl Editor {
     }
 
     pub(super) fn draw_freehand(&mut self, from: (i32, i32), to: (i32, i32), color: Color) {
+        self.document.prepare_active_edit();
+        let rect = RectI::between(from, to).expand(self.tool_radius());
+        if let Some(base) = self.stroke.as_mut().and_then(|s| s.base.as_mut()) {
+            base.capture(&self.document.buffer, rect);
+        }
         match self.settings.tool {
             Tool::Pencil => {
                 if self.settings.pencil_size == 1 && self.settings.pixel_perfect {
@@ -868,7 +896,7 @@ fn is_corner(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> bool {
 /// of the stroke may paint it again. Returns whether the pixel was restored.
 fn unpaint_thin(
     buffer: &mut PixelBuffer,
-    base: &PixelBuffer,
+    base: &PreviewBackup,
     painted: &mut [bool],
     stride: usize,
     p: (i32, i32),

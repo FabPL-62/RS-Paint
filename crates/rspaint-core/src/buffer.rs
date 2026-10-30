@@ -1,7 +1,19 @@
 //! An owned RGBA8 pixel buffer.
 
 use crate::color::Color;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+
+pub(crate) const HISTORY_BLOCK_SIZE: u32 = 128;
+
+fn next_version() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let version = NEXT.fetch_add(1, Ordering::Relaxed);
+    assert_ne!(version, 0, "pixel version counter exhausted");
+    version
+}
 
 /// An owned, top-left-origin RGBA8 image buffer with 4 bytes per pixel.
 ///
@@ -9,13 +21,32 @@ use std::sync::Arc;
 /// texture. Alpha is stored non-premultiplied.
 ///
 /// Cloning is cheap: the pixels are shared until the clone is written to
-/// (copy-on-write). This keeps per-stroke snapshots and undo history from
-/// copying the whole image.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// (copy-on-write). The first write to a shared buffer copies the whole image.
+/// Long-lived editor history uses separate block-shared snapshots instead.
+#[derive(Clone)]
 pub struct PixelBuffer {
     width: u32,
     height: u32,
     data: Arc<Vec<u8>>,
+    versions: Arc<Vec<u64>>,
+    write_version: u64,
+}
+
+// Tracking is derived state, not part of image equality or debug output.
+impl PartialEq for PixelBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width && self.height == other.height && self.data == other.data
+    }
+}
+impl Eq for PixelBuffer {}
+impl std::fmt::Debug for PixelBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PixelBuffer")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("data", &self.data)
+            .finish()
+    }
 }
 
 impl PixelBuffer {
@@ -31,10 +62,15 @@ impl PixelBuffer {
         for pixel in data.chunks_exact_mut(4) {
             pixel.copy_from_slice(&fill);
         }
+        let version = next_version();
+        let blocks = width.div_ceil(HISTORY_BLOCK_SIZE) as usize
+            * height.div_ceil(HISTORY_BLOCK_SIZE) as usize;
         Self {
             width,
             height,
             data: Arc::new(data),
+            versions: Arc::new(vec![version; blocks]),
+            write_version: version,
         }
     }
 
@@ -71,9 +107,75 @@ impl PixelBuffer {
         Arc::clone(&self.data)
     }
 
+    /// Weak storage identity for derived caches. Every mutation uses make_mut,
+    /// which invalidates weak identities even when there is only one owner.
+    /// Unlike a strong snapshot, this does not retain or copy the pixel Vec.
+    pub(crate) fn weak_data(&self) -> std::sync::Weak<Vec<u8>> {
+        Arc::downgrade(&self.data)
+    }
+
     /// Mutable access to the raw RGBA8 bytes.
     pub fn data_mut(&mut self) -> &mut [u8] {
+        self.mark_region(0, 0, self.width, self.height);
         Arc::make_mut(&mut self.data).as_mut_slice()
+    }
+
+    /// Mutable RGBA bytes of one clipped row span. Only the blocks intersecting
+    /// the returned slice are marked as possibly changed. Raw data_mut instead
+    /// marks every block, so unrestricted byte writes remain safe for history.
+    pub fn row_mut(&mut self, y: u32, x: u32, width: u32) -> &mut [u8] {
+        if y >= self.height || x >= self.width || width == 0 {
+            return &mut [];
+        }
+        let width = width.min(self.width - x);
+        self.mark_region(x, y, width, 1);
+        let start = self.index(x, y);
+        &mut Arc::make_mut(&mut self.data)[start..start + width as usize * 4]
+    }
+
+    pub(crate) fn history_versions(&self) -> Arc<Vec<u64>> {
+        self.versions.clone()
+    }
+
+    /// Used only after reconstruction from these exact immutable blocks.
+    pub(crate) fn adopt_history_versions(&mut self, versions: Arc<Vec<u64>>) {
+        assert_eq!(versions.len(), self.versions.len());
+        self.versions = versions;
+        self.write_version = next_version();
+    }
+
+    fn mark_region(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // A shared table belongs to a snapshot or another editable clone.
+        // Allocate a unique generation once for this mutation batch, never
+        // once per pixel, and detach only the small version table.
+        if Arc::strong_count(&self.versions) > 1 {
+            self.write_version = next_version();
+        } else if width == 1 && height == 1 {
+            // Most stamped pixels revisit a block already touched in this
+            // batch. Avoid another make_mut ownership check in that hot path.
+            let cols = self.width.div_ceil(HISTORY_BLOCK_SIZE) as usize;
+            let index =
+                (y / HISTORY_BLOCK_SIZE) as usize * cols + (x / HISTORY_BLOCK_SIZE) as usize;
+            if self.versions[index] == self.write_version {
+                return;
+            }
+        }
+        let version = self.write_version;
+        let versions = Arc::make_mut(&mut self.versions);
+        if x == 0 && y == 0 && width == self.width && height == self.height {
+            versions.fill(version);
+            return;
+        }
+        let cols = self.width.div_ceil(HISTORY_BLOCK_SIZE) as usize;
+        let left = x / HISTORY_BLOCK_SIZE;
+        let right = (x + width - 1) / HISTORY_BLOCK_SIZE;
+        for row in y / HISTORY_BLOCK_SIZE..=(y + height - 1) / HISTORY_BLOCK_SIZE {
+            let start = row as usize * cols + left as usize;
+            versions[start..start + (right - left + 1) as usize].fill(version);
+        }
     }
 
     fn index(&self, x: u32, y: u32) -> usize {
@@ -105,6 +207,7 @@ impl PixelBuffer {
             return;
         }
         let i = self.index(x, y);
+        self.mark_region(x, y, 1, 1);
         let data = Arc::make_mut(&mut self.data);
         data[i..i + 4].copy_from_slice(&color.to_array());
     }
@@ -170,6 +273,10 @@ impl PixelBuffer {
         let y = y.min(self.height);
         let w = w.min(self.width - x);
         let h = h.min(self.height - y);
+        if w == 0 || h == 0 {
+            return;
+        }
+        self.mark_region(x, y, w, h);
         let len = w as usize * 4;
         let width = self.width as usize;
         let x = x as usize;
@@ -187,6 +294,7 @@ impl PixelBuffer {
         }
         let w = src.width.min(self.width - x);
         let h = src.height.min(self.height - y);
+        self.mark_region(x, y, w, h);
         let len = w as usize * 4;
         let width = self.width as usize;
         let x = x as usize;
@@ -244,6 +352,7 @@ impl PixelBuffer {
 
     /// Fills the whole buffer with a single color.
     pub fn fill(&mut self, color: Color) {
+        self.mark_region(0, 0, self.width, self.height);
         let color = color.to_array();
         for pixel in Arc::make_mut(&mut self.data).chunks_exact_mut(4) {
             pixel.copy_from_slice(&color);
@@ -365,5 +474,50 @@ mod tests {
         assert_eq!(a.get(1, 1), Some(Color::BLACK));
         assert_eq!(b.get(0, 0), Some(Color::BLACK));
         assert_eq!(b.get(1, 1), Some(Color::rgb(200, 10, 20)));
+    }
+
+    #[test]
+    fn block_versions_track_clipped_mutations_and_forked_clones() {
+        let base = PixelBuffer::new(257, 259, Color::WHITE);
+        let initial = base.history_versions();
+        let mut left = base.clone();
+        let mut right = base.clone();
+        left.set(127, 127, Color::BLACK);
+        right.set(127, 127, Color::rgb(10, 20, 30));
+        let l = left.history_versions();
+        let r = right.history_versions();
+        assert_ne!(l[0], r[0], "sibling writes need distinct versions");
+        for index in 1..9 {
+            assert_eq!(l[index], initial[index]);
+        }
+        assert!(left.row_mut(999, 0, 10).is_empty());
+        assert!(left.row_mut(0, 999, 10).is_empty());
+        assert_eq!(left.history_versions(), l);
+        left.row_mut(128, 127, 999).fill(30);
+        let row = left.history_versions();
+        for index in 0..9 {
+            assert_eq!(row[index] != l[index], [3, 4, 5].contains(&index));
+        }
+        let patch = PixelBuffer::new(3, 3, Color::BLACK);
+        left.blit(&patch, 127, 127);
+        let blit = left.history_versions();
+        for index in 0..9 {
+            assert_eq!(blit[index] != row[index], [0, 1, 3, 4].contains(&index));
+        }
+        left.copy_region_from(&base, 256, 258, u32::MAX, u32::MAX);
+        let copied = left.history_versions();
+        for index in 0..9 {
+            assert_eq!(copied[index] != blit[index], index == 8);
+        }
+        left.data_mut()[0] = 10;
+        let raw = left.history_versions();
+        assert!(raw.iter().zip(copied.iter()).all(|(a, b)| a != b));
+        left.fill(Color::WHITE);
+        assert!(left
+            .history_versions()
+            .iter()
+            .zip(raw.iter())
+            .all(|(a, b)| a != b));
+        assert_eq!(left, base, "tracking must not affect image equality");
     }
 }

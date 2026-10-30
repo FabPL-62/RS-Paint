@@ -12,13 +12,29 @@ pub const DEFAULT_CANVAS_WIDTH: u32 = 683;
 /// Default canvas height used by JS Paint.
 pub const DEFAULT_CANVAS_HEIGHT: u32 = 384;
 
+/// Pixel payload retained by the derived composition cache. Excludes hash-map,
+/// signatures and allocator metadata; `entries` separately bounds that growth.
+#[derive(Clone, Copy, Debug)]
+pub struct CompositionCacheStats {
+    pub stored_pixel_bytes: usize,
+    pub uncompressed_pixel_bytes: usize,
+    pub entries: usize,
+    /// Workers used for the last direct scan; zero used the cached compositor.
+    pub direct_scan_workers: usize,
+}
+
 /// The state of a single image being edited.
 ///
 /// The document is a stack of layers. `buffer` always holds the *active*
 /// layer's working pixels (every editor operation reads and writes it), while
 /// `composite` holds the flattened image shown on screen and saved to disk.
+/// During an interactive edit the active tree entry is only a placeholder;
+/// read its pixels through `buffer` or call `sync_active` before copying the tree.
 #[derive(Clone, Debug)]
 pub struct Document {
+    cache: crate::composite_cache::CompositeCache,
+    editing_active: Option<u64>,
+    direct_scan_workers: usize,
     /// The working pixels of the active layer.
     pub buffer: PixelBuffer,
     /// The flattened image: all visible layers composited.
@@ -46,6 +62,15 @@ pub struct Document {
 }
 
 impl Document {
+    pub fn composition_cache_stats(&self) -> CompositionCacheStats {
+        let (stored_pixel_bytes, uncompressed_pixel_bytes, entries) = self.cache.stats();
+        CompositionCacheStats {
+            stored_pixel_bytes,
+            uncompressed_pixel_bytes,
+            entries,
+            direct_scan_workers: self.direct_scan_workers,
+        }
+    }
     /// Creates a new opaque white document of the given size.
     pub fn new(width: u32, height: u32) -> Self {
         let buffer = PixelBuffer::new(width, height, Color::WHITE);
@@ -55,6 +80,9 @@ impl Document {
             buffer.clone(),
         ))];
         Self {
+            cache: Default::default(),
+            editing_active: None,
+            direct_scan_workers: 0,
             composite: buffer.clone(),
             buffer,
             layers,
@@ -82,6 +110,9 @@ impl Document {
 
     /// Replaces the whole image with `pixels` on a single `Background` layer.
     pub fn replace_pixels(&mut self, pixels: PixelBuffer) {
+        self.direct_scan_workers = 0;
+        self.editing_active = None;
+        self.cache = Default::default();
         let layer_id = self.next_id;
         self.next_id += 1;
         self.layers = vec![LayerNode::Layer(Layer::new(
@@ -103,10 +134,28 @@ impl Document {
             layer.pixels = self.buffer.clone();
             layer.revision = self.active_revision;
         }
+        self.editing_active = None;
+    }
+
+    /// Releases the stale active-layer mirror during an interactive edit.
+    /// The working buffer remains authoritative; active-layer composition uses
+    /// it directly. sync_active restores the tree entry before snapshots, layer
+    /// switches and tree operations. External owners still get normal COW.
+    pub fn prepare_active_edit(&mut self) {
+        if self.editing_active == Some(self.active) {
+            return;
+        }
+        if let Some(LayerNode::Layer(layer)) = find_node_mut(&mut self.layers, self.active) {
+            layer.pixels = PixelBuffer::transparent(1, 1);
+            self.editing_active = Some(self.active);
+        }
     }
 
     /// Loads the active layer's pixels into the working buffer.
     pub fn refresh_buffer(&mut self) {
+        if self.editing_active == Some(self.active) {
+            return;
+        }
         match find_node(&self.layers, self.active) {
             Some(LayerNode::Layer(layer)) => self.buffer = layer.pixels.clone(),
             _ => {
@@ -153,15 +202,76 @@ impl Document {
         {
             self.composite = PixelBuffer::transparent(self.buffer.width(), self.buffer.height());
         }
-        let mut region = PixelBuffer::transparent(width, height);
-        composite_region(
+        let end_x = x.saturating_add(width).min(self.width());
+        let end_y = y.saturating_add(height).min(self.height());
+        if x >= end_x || y >= end_y {
+            return;
+        }
+        let region = Region::new(x, y, end_x - x, end_y - y);
+        self.direct_scan_workers = 0;
+        if self
+            .cache
+            .direct_scan_worthwhile(&self.layers, self.active, region)
+        {
+            self.render_direct(region);
+            return;
+        }
+        self.cache.begin_update();
+        let serial_started =
+            crate::parallel_composite::timed_scan_candidate(region).then(std::time::Instant::now);
+        // Bound temporary images, including each nested group's intermediate,
+        // to 256 KiB instead of allocating another full canvas per group.
+        const TILE: usize = 256;
+        for ty in (y..end_y).step_by(TILE) {
+            // Learn from completed rows even on the first composition. Keep
+            // their pixels and cache; only the remaining rows change strategy.
+            let remaining = Region::new(x, ty, end_x - x, end_y - ty);
+            if ty != y
+                && (self
+                    .cache
+                    .direct_scan_worthwhile(&self.layers, self.active, remaining)
+                    || serial_started.is_some_and(|started| {
+                        crate::parallel_composite::slow_scan_worthwhile(
+                            remaining,
+                            (ty - y) as u64 * (end_x - x) as u64,
+                            started.elapsed(),
+                        )
+                    }))
+            {
+                self.render_direct(remaining);
+                return;
+            }
+            for tx in (x..end_x).step_by(TILE) {
+                let w = (end_x - tx).min(TILE as u32);
+                let h = (end_y - ty).min(TILE as u32);
+                let mut region = PixelBuffer::transparent(w, h);
+                self.cache.composite(
+                    &self.layers,
+                    None,
+                    self.active,
+                    &self.buffer,
+                    Region::new(tx, ty, w, h),
+                    &mut region,
+                );
+                self.composite.blit(&region, tx, ty);
+            }
+        }
+    }
+
+    fn render_direct(&mut self, region: Region) {
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(8)
+            .min(region.height as usize);
+        crate::parallel_composite::render(
             &self.layers,
             self.active,
             &self.buffer,
-            Region::new(x, y, width, height),
-            &mut region,
+            &mut self.composite,
+            region,
+            workers,
         );
-        self.composite.blit(&region, x, y);
+        self.direct_scan_workers = workers;
     }
 
     /// The flattened image, ready to save or display.
@@ -188,6 +298,33 @@ impl Document {
     }
 
     /// A snapshot of the layer tree for undo/redo.
+    pub fn history_snapshot(
+        &mut self,
+        previous: Option<&crate::HistorySnapshot>,
+    ) -> crate::HistorySnapshot {
+        self.sync_active();
+        crate::HistorySnapshot {
+            layers: crate::snapshot::capture_nodes(&self.layers, previous),
+            active: self.active,
+            next_id: self.next_id,
+            layer_counter: self.layer_counter,
+            group_counter: self.group_counter,
+        }
+    }
+
+    /// Restores immutable history blocks to contiguous editable layers.
+    pub fn restore_history(&mut self, snapshot: crate::HistorySnapshot) {
+        self.sync_active();
+        self.layers = crate::snapshot::restore_nodes(&snapshot.layers, &self.layers);
+        self.active = snapshot.active;
+        self.next_id = self.next_id.max(snapshot.next_id);
+        self.layer_counter = snapshot.layer_counter;
+        self.group_counter = snapshot.group_counter;
+        self.refresh_buffer();
+        self.composite_all();
+    }
+
+    /// A full-buffer snapshot, for callers that need editable layer pixels.
     pub fn layer_stack(&mut self) -> LayerStack {
         self.sync_active();
         LayerStack {
@@ -201,6 +338,7 @@ impl Document {
 
     /// Restores a snapshot taken by [`Self::layer_stack`].
     pub fn restore(&mut self, stack: LayerStack) {
+        self.editing_active = None;
         self.layers = stack.layers;
         self.active = stack.active;
         // Ids only move forward, so a later branch never reuses the id of a
@@ -282,5 +420,85 @@ mod tests {
             document.flattened_pixel(0, 0),
             Some(Color::rgb(128, 128, 128))
         );
+    }
+
+    #[test]
+    fn editing_releases_the_active_mirror_and_syncs_before_tree_operations() {
+        let mut document = Document::new(259, 131);
+        document.composite_all();
+        let address = document.buffer.data().as_ptr();
+        document.prepare_active_edit();
+        document.buffer.set(128, 128, Color::BLACK);
+        assert_eq!(address, document.buffer.data().as_ptr());
+        document.refresh_buffer();
+        assert_eq!(document.buffer.get(128, 128), Some(Color::BLACK));
+        document.composite_all();
+        assert_eq!(document.composite.get(128, 128), Some(Color::BLACK));
+        let snapshot = document.history_snapshot(None);
+        assert_eq!(document.layers[0].pixel_size(), Some((259, 131)));
+        document.prepare_active_edit();
+        document.buffer.set(129, 128, Color::BLACK);
+        document.restore_history(snapshot);
+        assert_eq!(document.buffer.get(128, 128), Some(Color::BLACK));
+        assert_eq!(document.buffer.get(129, 128), Some(Color::WHITE));
+        document.layers.insert(
+            0,
+            LayerNode::Layer(Layer::new(2, "Other", PixelBuffer::transparent(259, 131))),
+        );
+        document.prepare_active_edit();
+        document.buffer.set(129, 128, Color::BLACK);
+        document.activate(2);
+        assert_eq!(
+            find_node(&document.layers, 1)
+                .unwrap()
+                .layer()
+                .unwrap()
+                .pixels
+                .get(129, 128),
+            Some(Color::BLACK)
+        );
+        assert_eq!(document.width(), 259);
+    }
+
+    #[test]
+    fn tiled_composition_matches_full_with_nested_groups_and_partial_edges() {
+        use crate::layer::LayerGroup;
+        let mut document = Document::new(519, 273);
+        document.buffer.set(257, 260, Color::BLACK);
+        for mode in LayerBlend::ALL {
+            let mut layer = Layer::new(
+                2,
+                "Top",
+                PixelBuffer::new(519, 273, Color::rgba(20, 130, 210, 170)),
+            );
+            layer.blend = mode;
+            let mut inner = LayerGroup::new(3, "Inner");
+            inner.opacity = 65;
+            inner.children.push(LayerNode::Layer(layer));
+            let mut outer = LayerGroup::new(4, "Outer");
+            outer.blend = mode;
+            outer.children.push(LayerNode::Group(inner));
+            document.layers.truncate(1);
+            document.layers.insert(0, LayerNode::Group(outer));
+            let mut expected = PixelBuffer::transparent(519, 273);
+            composite_region(
+                &document.layers,
+                document.active,
+                &document.buffer,
+                Region::new(0, 0, 519, 273),
+                &mut expected,
+            );
+            document.composite_all();
+            assert_eq!(document.composite, expected, "full {mode:?}");
+            document.composite.fill(Color::TRANSPARENT);
+            document.composite_rect(7, 9, u32::MAX, u32::MAX);
+            assert_eq!(
+                document.composite.region_rgba(7, 9, 512, 264),
+                expected.region_rgba(7, 9, 512, 264),
+                "partial {mode:?}"
+            );
+            assert_eq!(document.composite.get(6, 9), Some(Color::TRANSPARENT));
+            document.composite_rect(u32::MAX, u32::MAX, 10, 10);
+        }
     }
 }

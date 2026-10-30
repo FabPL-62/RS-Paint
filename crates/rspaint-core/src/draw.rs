@@ -85,17 +85,49 @@ pub fn draw_line_masked(
     painted: &mut [bool],
     width: u32,
 ) {
-    if brush.blend == BlendMode::Replace && width == buffer.width() {
+    // The mask already defines once-per-stroke blending, so unioning the
+    // footprints preserves both alpha and selection clipping. Keep tiny tips,
+    // stationary dabs and thin diagonal tips on the lower-overhead stamp path.
+    let swept_blend = brush.size >= 8
+        && a != b
+        && matches!(
+            brush.shape,
+            crate::brush::BrushShape::Square | crate::brush::BrushShape::Circle
+        );
+    if (brush.blend == BlendMode::Replace || swept_blend) && width == buffer.width() {
         let rgba = color.to_array();
+        let replace = brush.blend == BlendMode::Replace || color.is_opaque();
         let rows = brush_line_spans(buffer.size(), a, b, brush);
-        let data = buffer.data_mut();
         for (y, spans) in rows {
             for (left, right) in spans {
-                for x in left..=right {
-                    let index = y * width as usize + x as usize;
-                    if index < painted.len() && !painted[index] {
-                        painted[index] = true;
-                        data[index * 4..index * 4 + 4].copy_from_slice(&rgba);
+                let start = y * width as usize + left as usize;
+                let count = ((right - left + 1) as usize).min(painted.len().saturating_sub(start));
+                if count == 0 {
+                    continue;
+                }
+                let mask = &mut painted[start..start + count];
+                let Some(first) = mask.iter().position(|&already| !already) else {
+                    continue;
+                };
+                if !replace && color.is_transparent() {
+                    // Invisible paint still consumes the stroke mask, but does
+                    // not need to detach or dirty the image's pixel storage.
+                    mask[first..].fill(true);
+                    continue;
+                }
+                let data =
+                    buffer.row_mut(y as u32, left as u32 + first as u32, (count - first) as u32);
+                for (already, pixel) in mask[first..].iter_mut().zip(data.chunks_exact_mut(4)) {
+                    if !*already {
+                        *already = true;
+                        let output = if replace {
+                            rgba
+                        } else {
+                            color
+                                .over(Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]))
+                                .to_array()
+                        };
+                        pixel.copy_from_slice(&output);
                     }
                 }
             }
@@ -143,7 +175,14 @@ pub fn erase_line(
                 .chunks_exact(4)
                 .position(|pixel| pixel == from);
             if let Some(first) = first {
-                for pixel in buffer.data_mut()[start + first * 4..end].chunks_exact_mut(4) {
+                for pixel in buffer
+                    .row_mut(
+                        y as u32,
+                        left as u32 + first as u32,
+                        (right - left + 1) as u32 - first as u32,
+                    )
+                    .chunks_exact_mut(4)
+                {
                     if pixel == from {
                         pixel.copy_from_slice(&to);
                     }
@@ -671,6 +710,118 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn swept_blending_matches_stamps_with_alpha_selection_and_retraced_segments() {
+        use crate::brush::BrushShape::*;
+        let mut original = PixelBuffer::transparent(40, 32);
+        for y in 0..32 {
+            for x in 0..40 {
+                original.set(
+                    x,
+                    y,
+                    Color::rgba(
+                        (x * 7) as u8,
+                        (y * 11) as u8,
+                        90,
+                        [0, 127, 255][(x + y) as usize % 3],
+                    ),
+                );
+            }
+        }
+        for shape in [Square, Circle, Diagonal, ReverseDiagonal] {
+            for size in [1, 7, 8, 17, 49] {
+                let brush = Brush::new(shape, size);
+                for alpha in [0, 1, 96, 254, 255] {
+                    let color = Color::rgba(130, 40, 220, alpha);
+                    for mask_len in [40 * 32, 40 * 32 - 9] {
+                        let mut actual = original.clone();
+                        let mut expected = original.clone();
+                        let mut mask: Vec<_> = (0..mask_len)
+                            .map(|i| i % 7 == 0 || (i % 40 > 20 && i / 40 < 12))
+                            .collect();
+                        let mut expected_mask = mask.clone();
+                        for (a, b) in [
+                            ((-6, 3), (47, 29)),
+                            ((47, 29), (3, -8)),
+                            ((3, -8), (5, 20)),
+                            ((5, 20), (33, 20)),
+                            ((33, 20), (5, 20)),
+                            ((5, 20), (5, 20)),
+                            ((-100, -100), (-80, -80)),
+                        ] {
+                            let mut stamp = |x, y| {
+                                brush.stamp_masked(
+                                    &mut expected,
+                                    &mut expected_mask,
+                                    40,
+                                    x,
+                                    y,
+                                    color,
+                                )
+                            };
+                            if size > 1 {
+                                walk_dense_line(a, b, &mut stamp);
+                            } else {
+                                walk_line(a, b, &mut stamp);
+                            }
+                            draw_line_masked(&mut actual, a, b, &brush, color, &mut mask, 40);
+                            assert_eq!(
+                                actual, expected,
+                                "{shape:?}, size {size}, alpha {alpha}, {a:?}->{b:?}"
+                            );
+                            assert_eq!(mask, expected_mask);
+                        }
+                    }
+                }
+            }
+        }
+        // An unusual caller-supplied mask stride retains the previous fallback.
+        let brush = Brush::new(Square, 17);
+        let mut expected = original.clone();
+        let mut actual = original;
+        let mut mask = vec![false; 39 * 32];
+        let mut expected_mask = mask.clone();
+        let color = Color::rgba(10, 20, 30, 120);
+        walk_dense_line((2, 2), (38, 31), |x, y| {
+            brush.stamp_masked(&mut expected, &mut expected_mask, 39, x, y, color)
+        });
+        draw_line_masked(&mut actual, (2, 2), (38, 31), &brush, color, &mut mask, 39);
+        assert_eq!(actual, expected);
+        assert_eq!(mask, expected_mask);
+    }
+
+    #[test]
+    fn covered_and_transparent_sweeps_do_not_detach_pixel_storage() {
+        let original = PixelBuffer::new(40, 32, Color::WHITE);
+        let mut actual = original.clone();
+        let address = actual.data().as_ptr();
+        let brush = Brush::new(crate::brush::BrushShape::Circle, 17);
+        let mut covered = vec![true; 40 * 32];
+        draw_line_masked(
+            &mut actual,
+            (2, 2),
+            (38, 31),
+            &brush,
+            Color::BLACK,
+            &mut covered,
+            40,
+        );
+        assert_eq!(actual.data().as_ptr(), address);
+        let mut mask = vec![false; 40 * 32];
+        draw_line_masked(
+            &mut actual,
+            (2, 2),
+            (38, 31),
+            &brush,
+            Color::TRANSPARENT,
+            &mut mask,
+            40,
+        );
+        assert_eq!(actual.data().as_ptr(), address);
+        assert!(mask.iter().any(|&painted| painted));
+        assert_eq!(actual, original);
     }
 
     #[test]

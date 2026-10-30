@@ -22,6 +22,7 @@ impl Editor {
         self.polygon_preview = None;
         self.curve_points.clear();
         self.curve_base = None;
+        self.curve_preview_rect = None;
         self.curve_dragging = false;
         self.text_box = None;
         self.text_buffer.clear();
@@ -40,7 +41,7 @@ impl Editor {
     pub fn reset_document(&mut self) {
         self.document = Document::default();
         self.colors = DocumentColors::default();
-        let stack = self.document.layer_stack();
+        let stack = self.document.history_snapshot(None);
         self.history = History::new(stack, "New");
         self.layer_selection = vec![self.document.active];
         self.layer_anchor = None;
@@ -88,7 +89,7 @@ impl Editor {
         }
         if self.history.undo() {
             let stack = self.history.current_snapshot().clone();
-            self.document.restore(stack);
+            self.document.restore_history(stack);
             self.reset_layer_selection();
             self.document.modified = true;
             self.mark_full();
@@ -99,7 +100,7 @@ impl Editor {
         self.selection_undo.clear();
         if self.history.redo() {
             let stack = self.history.current_snapshot().clone();
-            self.document.restore(stack);
+            self.document.restore_history(stack);
             self.reset_layer_selection();
             self.document.modified = true;
             self.mark_full();
@@ -109,7 +110,7 @@ impl Editor {
     pub fn jump_to_history(&mut self, id: rspaint_core::NodeId) {
         if self.history.jump_to(id) {
             let stack = self.history.current_snapshot().clone();
-            self.document.restore(stack);
+            self.document.restore_history(stack);
             self.reset_layer_selection();
             self.document.modified = true;
             self.mark_full();
@@ -117,7 +118,9 @@ impl Editor {
     }
 
     pub fn commit(&mut self, name: &str) {
-        let stack = self.document.layer_stack();
+        let stack = self
+            .document
+            .history_snapshot(Some(self.history.current_snapshot()));
         self.history.commit(name.to_string(), stack);
         self.document.modified = true;
     }
@@ -138,7 +141,7 @@ impl Editor {
             .and_then(file_stem)
             .unwrap_or_else(|| String::from("Untitled"));
         self.file_path = path;
-        let stack = self.document.layer_stack();
+        let stack = self.document.history_snapshot(None);
         self.history = History::new(stack, "Open");
         self.layer_selection = vec![self.document.active];
         self.layer_anchor = None;

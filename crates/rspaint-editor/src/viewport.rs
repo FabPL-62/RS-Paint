@@ -132,7 +132,6 @@ impl Editor {
         self.document.layers = layers;
         self.document.active = drag.orig_active;
         self.document.refresh_buffer();
-        self.document.composite_all();
         self.pan = geometry::vec2(new_min_x - viewport_min.x, new_min_y - viewport_min.y);
         // Keep the selection anchored to its content after the resize.
         if let Some((origin_x, origin_y)) = drag.sel_orig {

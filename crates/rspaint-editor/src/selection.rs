@@ -988,7 +988,7 @@ impl Editor {
         Some(mask)
     }
 
-    pub(super) fn clip_region_to_selection(&mut self, snapshot: &PixelBuffer, rect: RectI) {
+    pub(super) fn clip_region_to_selection(&mut self, snapshot: &impl OriginalPixels, rect: RectI) {
         if !self.clipping_to_selection() {
             return;
         }

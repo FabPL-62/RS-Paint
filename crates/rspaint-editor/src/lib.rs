@@ -10,8 +10,8 @@ use rspaint_core::draw::{
 };
 use rspaint_core::fill::flood_fill;
 use rspaint_core::{
-    palette, transform, BlendMode, Brush, BrushShape, Color, Document, History, LayerBlend,
-    LayerNode, LayerRow, LayerStack, PixelBuffer,
+    palette, transform, BlendMode, Brush, BrushShape, Color, Document, History, HistorySnapshot,
+    LayerBlend, LayerNode, LayerRow, PixelBuffer,
 };
 
 pub mod text;
@@ -113,8 +113,8 @@ struct Stroke {
     name: &'static str,
     /// Whether this stroke is a color eraser (right-drag with the Eraser).
     color_eraser: bool,
-    /// Pre-stroke copy of the canvas, used by shape tools to redraw previews.
-    base: Option<PixelBuffer>,
+    /// Original blocks touched by the stroke, for cancellation and previews.
+    base: Option<PreviewBackup>,
     /// The bounding box of the last shape preview, restored before the next one.
     preview_rect: Option<RectI>,
 }
@@ -336,7 +336,7 @@ pub struct Editor {
     pub settings: ToolSettings,
     pub colors: DocumentColors,
     pub document: Document,
-    pub history: History<LayerStack>,
+    pub history: History<HistorySnapshot>,
     pub magnification: f32,
     pub pan: geometry::Vec2,
     pub file_path: Option<std::path::PathBuf>,
@@ -374,13 +374,14 @@ pub struct Editor {
     sel_brush_active: bool,
     sel_brush_last: Option<(i32, i32)>,
     curve_points: Vec<(i32, i32)>,
-    curve_base: Option<PixelBuffer>,
+    curve_base: Option<PreviewBackup>,
+    curve_preview_rect: Option<RectI>,
     curve_dragging: bool,
     fonts: crate::text::FontSet,
     text_box: Option<TextBox>,
     text_buffer: String,
     text_creating: Option<((i32, i32), (i32, i32))>,
-    text_base: Option<PixelBuffer>,
+    text_base: Option<PreviewBackup>,
     sel_brush_tiles: Vec<SelectionBrushTile>,
     sel_brush_tile_cols: i32,
     pub pick_hold: Option<PickTarget>,
@@ -533,7 +534,7 @@ impl Default for Editor {
 impl Editor {
     pub fn new() -> Self {
         let mut document = Document::default();
-        let history = History::new(document.layer_stack(), "New");
+        let history = History::new(document.history_snapshot(None), "New");
         let layer_selection = vec![document.active];
         Self {
             settings: ToolSettings::default(),
@@ -572,6 +573,7 @@ impl Editor {
             sel_brush_last: None,
             curve_points: Vec::new(),
             curve_base: None,
+            curve_preview_rect: None,
             curve_dragging: false,
             fonts: crate::text::FontSet::load(),
             text_box: None,
@@ -676,6 +678,8 @@ impl Editor {
 mod helpers;
 use helpers::*;
 mod drawing;
+mod preview_backup;
+use preview_backup::{OriginalPixels, PreviewBackup};
 mod layers;
 mod selection;
 mod selection_brush;

@@ -178,6 +178,46 @@ fn blend_pixel(dst: Color, src: Color, opacity: f32, mode: LayerBlend, x: u32, y
     )
 }
 
+const fn normalized_channels() -> [f32; 256] {
+    let mut values = [0.0; 256];
+    let mut index = 0;
+    while index < 256 {
+        values[index] = index as f32 / 255.0;
+        index += 1;
+    }
+    values
+}
+const NORMALIZED_CHANNELS: [f32; 256] = normalized_channels();
+
+// Exact Normal blend on an opaque backdrop; avoid the generic mode dispatch
+// and repeated byte-to-unit divisions while retaining the reference rounding.
+#[inline(always)]
+fn normal_on_opaque(dst: Color, src: Color, opacity: f32) -> Color {
+    let alpha = NORMALIZED_CHANNELS[src.a as usize] * opacity;
+    let remaining = 1.0 - alpha;
+    // This is the original expression with dst_alpha == 1: products by 1 and
+    // the zero term disappear. Keep normalization, division and rounding in
+    // the same order; do not reassociate into an integer-channel blend.
+    let out_alpha = alpha + remaining;
+    let channel = |s: u8, d: u8| {
+        let source = NORMALIZED_CHANNELS[s as usize];
+        let backdrop = NORMALIZED_CHANNELS[d as usize];
+        let value = alpha * source + remaining * backdrop;
+        let value = if out_alpha == 1.0 {
+            value * 255.0
+        } else {
+            value / out_alpha * 255.0
+        };
+        value.round().clamp(0.0, 255.0) as u8
+    };
+    Color::rgba(
+        channel(src.r, dst.r),
+        channel(src.g, dst.g),
+        channel(src.b, dst.b),
+        (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
 /// A raster layer.
 #[derive(Clone, Debug)]
 pub struct Layer {
@@ -563,12 +603,26 @@ pub fn composite_region(
                 } else {
                     &layer.pixels
                 };
-                blend_region(out, pixels, region.x, region.y, layer.opacity, layer.blend);
+                blend_region_at(
+                    out,
+                    pixels,
+                    (region.x, region.y),
+                    layer.opacity,
+                    layer.blend,
+                    (region.x, region.y),
+                );
             }
             LayerNode::Group(group) if group.visible && group.opacity > 0 => {
                 let mut inner = PixelBuffer::transparent(region.width, region.height);
                 composite_region(&group.children, active, active_pixels, region, &mut inner);
-                blend_region(out, &inner, 0, 0, group.opacity, group.blend);
+                blend_region_at(
+                    out,
+                    &inner,
+                    (0, 0),
+                    group.opacity,
+                    group.blend,
+                    (region.x, region.y),
+                );
             }
             _ => {}
         }
@@ -584,21 +638,101 @@ pub fn blend_region(
     opacity: u8,
     mode: LayerBlend,
 ) {
+    blend_region_at(out, src, (src_x, src_y), opacity, mode, (src_x, src_y));
+}
+
+#[inline(never)]
+fn uniform_region(pixels: &PixelBuffer, x: u32, y: u32, width: u32, height: u32) -> Option<Color> {
+    let color = pixels.get(x, y)?;
+    let rgba = color.to_array();
+    for row in y..y + height {
+        let start = (row as usize * pixels.width() as usize + x as usize) * 4;
+        if !pixels.data()[start..start + width as usize * 4]
+            .chunks_exact(4)
+            .all(|p| p == rgba)
+        {
+            return None;
+        }
+    }
+    Some(color)
+}
+
+// The sampling origin can differ from canvas coordinates for group buffers.
+pub(crate) fn blend_region_at(
+    out: &mut PixelBuffer,
+    src: &PixelBuffer,
+    (src_x, src_y): (u32, u32),
+    opacity: u8,
+    mode: LayerBlend,
+    (canvas_x, canvas_y): (u32, u32),
+) {
+    if opacity == 0 {
+        return;
+    }
+    let opaque_normal = opacity == 100 && mode == LayerBlend::Normal;
     let opacity = opacity as f32 / 100.0;
     let width = out.width().min(src.width().saturating_sub(src_x));
     let height = out.height().min(src.height().saturating_sub(src_y));
-    for y in 0..height {
-        for x in 0..width {
-            let Some(source) = src.get(src_x + x, src_y + y) else {
-                continue;
-            };
+    if width == 0 || height == 0 {
+        return;
+    }
+    // Flat paint regions can be blended exactly once. Dissolve is spatially
+    // varying and must retain its per-pixel path. Only fill when the source
+    // covers the whole output, so clipped calls leave the other pixels alone.
+    if mode != LayerBlend::Dissolve
+        && width == out.width()
+        && height == out.height()
+        && width as usize * height as usize >= 256
+    {
+        if let Some(source) = uniform_region(src, src_x, src_y, width, height) {
             if source.a == 0 {
+                return;
+            }
+            if let Some(dest) = uniform_region(out, 0, 0, width, height) {
+                out.fill(blend_pixel(dest, source, opacity, mode, canvas_x, canvas_y));
+                return;
+            }
+        }
+    }
+    let src_stride = src.width() as usize * 4;
+    let dst_stride = out.width() as usize * 4;
+    let row_bytes = width as usize * 4;
+    let source = src.data();
+    // Detach the shared output once, rather than checking Arc ownership for
+    // every pixel. Rows are clipped above; blending keeps the same rounding.
+    let dest = out.data_mut();
+    for y in 0..height as usize {
+        let src_start = (src_y as usize + y) * src_stride + src_x as usize * 4;
+        let dst_start = y * dst_stride;
+        let src_row = &source[src_start..src_start + row_bytes];
+        let dst_row = &mut dest[dst_start..dst_start + row_bytes];
+        for (x, (s, d)) in src_row
+            .chunks_exact(4)
+            .zip(dst_row.chunks_exact_mut(4))
+            .enumerate()
+        {
+            if s[3] == 0 {
                 continue;
             }
-            let Some(dest) = out.get(x, y) else {
+            if opaque_normal && s[3] == 255 {
+                d.copy_from_slice(s);
                 continue;
-            };
-            out.set(x, y, blend_pixel(dest, source, opacity, mode, x, y));
+            }
+            let src = Color::rgba(s[0], s[1], s[2], s[3]);
+            let dst = Color::rgba(d[0], d[1], d[2], d[3]);
+            if mode == LayerBlend::Normal && dst.a == 255 {
+                d.copy_from_slice(&normal_on_opaque(dst, src, opacity).to_array());
+                continue;
+            }
+            let color = blend_pixel(
+                dst,
+                src,
+                opacity,
+                mode,
+                canvas_x + x as u32,
+                canvas_y + y as u32,
+            );
+            d.copy_from_slice(&color.to_array());
         }
     }
 }
@@ -617,6 +751,188 @@ mod tests {
         let src = PixelBuffer::new(1, 1, Color::BLACK);
         blend_region(&mut out, &src, 0, 0, 50, LayerBlend::Normal);
         assert_eq!(pixel(&out), Color::rgb(128, 128, 128));
+    }
+
+    #[test]
+    fn normal_opaque_specialization_preserves_reference_rounding() {
+        for value in 0..256 {
+            assert_eq!(
+                NORMALIZED_CHANNELS[value].to_bits(),
+                (value as f32 / 255.0).to_bits()
+            );
+        }
+        for alpha in 0..=255 {
+            for opacity in [0, 1, 37, 50, 99, 100] {
+                for s in [0u8, 1, 63, 127, 128, 191, 254, 255] {
+                    for d in [0u8, 1, 63, 127, 128, 191, 254, 255] {
+                        let source = Color::rgba(s, 255 - s, s.wrapping_mul(73), alpha);
+                        let dest = Color::rgb(d, 255 - d, d.wrapping_mul(37));
+                        let opacity = opacity as f32 / 100.0;
+                        assert_eq!(
+                            normal_on_opaque(dest, source, opacity),
+                            blend_pixel(dest, source, opacity, LayerBlend::Normal, 0, 0)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn uniform_regions_match_pixel_reference_and_keep_dissolve_spatial() {
+        for mode in LayerBlend::ALL {
+            for opacity in [0, 1, 37, 100] {
+                for source in [
+                    Color::rgba(20, 70, 130, 0),
+                    Color::rgba(90, 120, 140, 1),
+                    Color::rgba(30, 80, 150, 140),
+                    Color::BLACK,
+                ] {
+                    for dest in [
+                        Color::rgba(70, 90, 120, 0),
+                        Color::rgba(100, 120, 160, 180),
+                        Color::WHITE,
+                    ] {
+                        let src = PixelBuffer::new(40, 35, source);
+                        let base = PixelBuffer::new(32, 32, dest);
+                        let mut expected = base.clone();
+                        for y in 0..32 {
+                            for x in 0..32 {
+                                expected.set(
+                                    x,
+                                    y,
+                                    blend_pixel(
+                                        dest,
+                                        source,
+                                        opacity as f32 / 100.0,
+                                        mode,
+                                        17 + x,
+                                        23 + y,
+                                    ),
+                                );
+                            }
+                        }
+                        let mut actual = base;
+                        blend_region_at(&mut actual, &src, (3, 2), opacity, mode, (17, 23));
+                        assert_eq!(
+                            actual, expected,
+                            "{mode:?}, opacity {opacity}, source {source:?}, dest {dest:?}"
+                        );
+                    }
+                }
+            }
+        }
+        let src = PixelBuffer::new(40, 35, Color::BLACK);
+        let mut actual = PixelBuffer::new(32, 32, Color::WHITE);
+        blend_region(&mut actual, &src, 20, 20, 100, LayerBlend::Normal);
+        assert_eq!(actual.get(19, 14), Some(Color::BLACK));
+        assert_eq!(actual.get(20, 14), Some(Color::WHITE));
+        assert_eq!(actual.get(19, 15), Some(Color::WHITE));
+        // A nonuniform source or backdrop must not take the flat-region path.
+        let mut src = PixelBuffer::new(32, 32, Color::rgba(10, 20, 30, 140));
+        src.set(31, 31, Color::BLACK);
+        let mut base = PixelBuffer::new(32, 32, Color::WHITE);
+        base.set(0, 0, Color::rgba(80, 60, 40, 120));
+        let mut expected = base.clone();
+        for y in 0..32 {
+            for x in 0..32 {
+                expected.set(
+                    x,
+                    y,
+                    blend_pixel(
+                        base.get(x, y).unwrap(),
+                        src.get(x, y).unwrap(),
+                        0.5,
+                        LayerBlend::Normal,
+                        x,
+                        y,
+                    ),
+                );
+            }
+        }
+        blend_region(&mut base, &src, 0, 0, 50, LayerBlend::Normal);
+        assert_eq!(base, expected);
+    }
+
+    #[test]
+    fn row_compositor_matches_pixel_reference_for_all_modes_and_opacities() {
+        let mut src = PixelBuffer::transparent(19, 13);
+        let mut base = PixelBuffer::transparent(17, 11);
+        for (i, pixel) in src.data_mut().chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(&[
+                (i * 31) as u8,
+                (i * 73) as u8,
+                (i * 17) as u8,
+                [0, 1, 127, 254, 255][i % 5],
+            ]);
+        }
+        for (i, pixel) in base.data_mut().chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(&[
+                (i * 13) as u8,
+                (i * 47) as u8,
+                (i * 89) as u8,
+                [255, 0, 100, 1, 254][i % 5],
+            ]);
+        }
+        for mode in LayerBlend::ALL {
+            for opacity in [0, 1, 50, 99, 100] {
+                for (sx, sy) in [(0, 0), (4, 3), (19, 13), (25, 25)] {
+                    let mut expected = base.clone();
+                    for y in 0..base.height().min(src.height().saturating_sub(sy)) {
+                        for x in 0..base.width().min(src.width().saturating_sub(sx)) {
+                            let source = src.get(sx + x, sy + y).unwrap();
+                            if source.a != 0 {
+                                let dest = expected.get(x, y).unwrap();
+                                expected.set(
+                                    x,
+                                    y,
+                                    blend_pixel(
+                                        dest,
+                                        source,
+                                        opacity as f32 / 100.0,
+                                        mode,
+                                        37 + x,
+                                        29 + y,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    let mut actual = base.clone();
+                    blend_region_at(&mut actual, &src, (sx, sy), opacity, mode, (37, 29));
+                    assert_eq!(
+                        actual, expected,
+                        "{mode:?}, opacity {opacity}, source {sx},{sy}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_composition_matches_full_for_all_modes_inside_groups() {
+        let canvas = PixelBuffer::new(32, 32, Color::WHITE);
+        for mode in LayerBlend::ALL {
+            let mut layer = Layer::new(
+                2,
+                "Inner",
+                PixelBuffer::new(32, 32, Color::rgba(60, 120, 180, 170)),
+            );
+            layer.blend = mode;
+            let mut group = LayerGroup::new(3, "Group");
+            group.blend = mode;
+            group.opacity = 70;
+            group.children.push(LayerNode::Layer(layer));
+            let nodes = vec![
+                LayerNode::Group(group),
+                LayerNode::Layer(Layer::new(1, "Base", canvas.clone())),
+            ];
+            let mut full = PixelBuffer::transparent(32, 32);
+            composite_region(&nodes, 1, &canvas, Region::new(0, 0, 32, 32), &mut full);
+            let mut partial = PixelBuffer::transparent(9, 7);
+            composite_region(&nodes, 1, &canvas, Region::new(11, 13, 9, 7), &mut partial);
+            assert_eq!(partial.data(), full.region_rgba(11, 13, 9, 7), "{mode:?}");
+        }
     }
 
     #[test]

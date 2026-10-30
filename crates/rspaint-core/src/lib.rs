@@ -11,6 +11,7 @@
 pub mod brush;
 pub mod buffer;
 pub mod color;
+mod composite_cache;
 pub mod document;
 pub mod draw;
 pub mod fill;
@@ -18,7 +19,9 @@ pub mod history;
 pub mod io;
 pub mod layer;
 pub mod palette;
+mod parallel_composite;
 pub mod selection;
+pub mod snapshot;
 pub mod transform;
 
 pub use brush::{Brush, BrushShape};
@@ -27,3 +30,4 @@ pub use color::{BlendMode, Color};
 pub use document::Document;
 pub use history::{History, HistoryNode, NodeId};
 pub use layer::{Layer, LayerBlend, LayerGroup, LayerNode, LayerRow, LayerStack};
+pub use snapshot::HistorySnapshot;

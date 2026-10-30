@@ -89,7 +89,18 @@ impl Editor {
 
     pub(super) fn open_text_box(&mut self, x: i32, y: i32, width: i32, height: i32) {
         self.text_buffer.clear();
-        self.text_base = Some(self.document.buffer.clone());
+        self.document.prepare_active_edit();
+        let mut base = PreviewBackup::new(&self.document.buffer);
+        base.capture(
+            &self.document.buffer,
+            RectI {
+                x0: x,
+                y0: y,
+                x1: x + width - 1,
+                y1: y + height - 1,
+            },
+        );
+        self.text_base = Some(base);
         self.text_box = Some(TextBox {
             x,
             y,
@@ -119,17 +130,22 @@ impl Editor {
         let Some(text_box) = self.text_box else {
             return;
         };
-        if let Some(base) = self.text_base.as_ref() {
-            let (width, height) = (self.document.width(), self.document.height());
-            self.document
-                .buffer
-                .copy_region_from(base, 0, 0, width, height);
+        self.document.prepare_active_edit();
+        let rect = RectI {
+            x0: text_box.x,
+            y0: text_box.y,
+            x1: text_box.x + text_box.width - 1,
+            y1: text_box.y + text_box.height - 1,
+        };
+        if let Some(base) = self.text_base.as_mut() {
+            base.capture(&self.document.buffer, rect);
+            base.restore_all(&mut self.document.buffer);
         }
         if !self.text_buffer.trim().is_empty() {
             let text = self.text_buffer.clone();
             self.draw_text_box(text_box, &text);
         }
-        self.mark_full();
+        self.mark_rect(rect);
     }
 
     pub(super) fn draw_text_box(&mut self, text_box: TextBox, text: &str) {
@@ -188,32 +204,36 @@ impl Editor {
             return;
         };
         let text = std::mem::take(&mut self.text_buffer);
+        let rect = RectI {
+            x0: text_box.x,
+            y0: text_box.y,
+            x1: text_box.x + text_box.width - 1,
+            y1: text_box.y + text_box.height - 1,
+        };
         if let Some(base) = self.text_base.take() {
-            let (width, height) = (self.document.width(), self.document.height());
-            self.document
-                .buffer
-                .copy_region_from(&base, 0, 0, width, height);
+            base.restore_all(&mut self.document.buffer);
         }
         if !text.trim().is_empty() {
             self.draw_text_box(text_box, &text);
             self.note_used_color(self.colors.foreground);
-            self.mark_full();
+            self.mark_rect(rect);
             self.commit("Text");
         } else {
-            self.mark_full();
+            self.document.sync_active();
+            self.mark_rect(rect);
         }
     }
 
     pub fn cancel_text(&mut self) {
         if let Some(base) = self.text_base.take() {
-            let (width, height) = (self.document.width(), self.document.height());
-            self.document
-                .buffer
-                .copy_region_from(&base, 0, 0, width, height);
+            base.restore_all(&mut self.document.buffer);
+            self.document.sync_active();
+            if let Some(rect) = base.bounds {
+                self.mark_rect(rect);
+            }
         }
         self.text_box = None;
         self.text_buffer.clear();
         self.text_creating = None;
-        self.mark_full();
     }
 }
