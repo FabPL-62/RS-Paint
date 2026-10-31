@@ -1,5 +1,618 @@
 # Rendimiento
 
+## Vigésima primera etapa: regiones separadas y subidas por lotes
+
+Los cambios de opacidad, visibilidad y modo de fusión pueden conservar hasta
+32 regiones separadas de contenido. Se usan los límites por bloque ya conocidos
+y se unen los rectángulos que se tocan. Solo se elige el lote si su área total
+es menor que un cuarto de la caja global. Con más fragmentación o cobertura
+densa se vuelve a la caja única, manteniendo un número acotado de operaciones.
+
+No se fuerza un escaneo espacial de imágenes densas solo para intentar dividir
+su caja: se aprovechan metadatos por bloque existentes o una mayoría conocida
+de bloques inicialmente transparentes. Las capas importadas sin esa información
+y con contenido en los cuatro bordes pueden conservar la ruta de caja única.
+Los grupos respetan las mismas reglas de visibilidad y alfa de las etapas previas.
+
+El editor incorpora `take_pending_uploads`, que compone y prepara cada región
+por separado. Los trazos pendientes se unen con esas regiones; invalidaciones
+completas e historial siguen teniendo prioridad. Los cambios repetidos del
+mismo deslizador se coalescen, y el total pendiente también se limita a 32.
+Las capas que ocupan todo el lienzo conservan una subida completa compartida.
+
+`take_pending_upload` permanece compatible: consume el lote y entrega una sola
+imagen que engloba todas sus partes. Ese cliente puede seguir preparando una
+caja grande, aunque la composición ya se haya hecho por zonas. El renderizador
+de producción usa la API de lotes y ejecuta `queue.write_texture` para cada
+región. La cola pendiente todavía recurre a una instantánea completa si recibe
+otra actualización antes de que el callback consuma la anterior: conserva la
+política segura previa frente a pases descartados y cambios de documento/tamaño.
+
+### Dos parches alejados
+
+```powershell
+cargo run --release -p rspaint-editor --example sparse_layer_changes_bench --offline -- --separated
+```
+
+La fixture añade un segundo parche de 120 × 80 cerca de la esquina opuesta,
+manteniendo ocho capas y los fondos detallados compartidos del ensayo anterior.
+La medición consume la API de lotes tanto antes (entonces una sola región)
+como después del cambio. Medianas CPU de siete ajustes de opacidad y seis
+cambios de visibilidad, incluyendo composición y preparación de bytes:
+
+| Escena | Opacidad anterior → actual | Visibilidad anterior → actual |
+| --- | ---: | ---: |
+| 1920 × 1080, arriba | 2,592 → 0,185 ms | 2,099 → 0,186 ms |
+| 1920 × 1080, debajo | 14,647 → 1,026 ms | 12,938 → 1,014 ms |
+| 1920 × 1080, grupo | 3,288 → 0,274 ms | 3,359 → 0,275 ms |
+| 6000 × 4000, arriba | 214,104 → 0,249 ms | 206,223 → 0,248 ms |
+| 6000 × 4000, debajo | 274,459 → 1,337 ms | 256,647 → 1,341 ms |
+| 6000 × 4000, grupo | 200,338 → 0,206 ms | 199,447 → 0,207 ms |
+
+La caja grande de 6000 × 4000 preparaba 73 440 000 bytes; los dos rectángulos
+preparan 76 800 bytes. En 1920 × 1080 pasa de 2 534 400 a 76 800 bytes.
+Son resultados de esta distribución espacial, no una mejora universal de capas
+dispersas. Las ocho escenas comparan la imagen final completa con la referencia.
+Se repiten también las ocho escenas de un parche/vacías como control.
+
+Datos: [coverage-regions-before-results.txt](coverage-regions-before-results.txt),
+[coverage-regions-results.txt](coverage-regions-results.txt) y
+[coverage-regions-control-results.txt](coverage-regions-control-results.txt).
+
+### Callback GPU real, fuera de pantalla
+
+```powershell
+cargo run --release -p rspaint-app --example gpu_pipeline_bench --offline -- --case=separated-opacity-8
+```
+
+RTX 3060 Ti, Vulkan, controlador 621.01; dos muestras de calentamiento y siete
+medidas. Los parches cambian de opacidad, sin añadir el trazo que utilizan otros
+escenarios del benchmark. Son medianas independientes, no columnas sumables:
+
+| Documento | CPU composición/preparación | Encolado de subida | Envío hasta finalización | Dibujo GPU | Pipeline completo |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1920 × 1080 | 0,250 ms | 0,030 ms | 0,180 ms | 0,031 ms | 0,511 ms |
+| 6000 × 4000 | 0,191 ms | 0,016 ms | 0,181 ms | 0,070 ms | 0,416 ms |
+
+El percentil 95 del pipeline grande fue 0,464 ms. No hay una medición anterior
+de este mismo escenario GPU para atribuir una mejora del pipeline; la tabla
+anterior de CPU es una comparación distinta. Se excluyen eventos de ventana,
+vsync y presentación. No se hace lectura de píxeles GPU en este ensayo; la
+exactitud de los lotes se comprueba en CPU al aplicarlos sobre una textura
+simulada y mediante referencias completas del editor.
+Datos: [coverage-regions-gpu-results.txt](coverage-regions-gpu-results.txt).
+
+### Verificación y siguiente caso
+
+Las pruebas cubren los trece modos y grupos con puntos en extremos opuestos,
+limpieza al ocultar, conservación de huecos, fusiones repetidas de pendientes,
+trazos intermedios, restauración de historial y compatibilidad de la API de una
+imagen. Se comprueba el límite de fragmentación y que lotes sin renderizar
+seguidos de otro cambio no pierdan píxeles. No se cambian los presupuestos de
+caché ni el número máximo de hilos.
+
+Siguiente caso: acumular actualizaciones anteriores al render sin tener que
+volver a una imagen completa para conservar todos los cambios pendientes.
+
+Verificación: `cargo test --workspace --offline` pasa 221 pruebas y deja una
+de portapapeles ignorada. El ejemplo GPU pasa cuatro pruebas adicionales.
+Pasan `cargo fmt --all -- --check` y `git diff --check`.
+
+## Vigésima etapa: primer cálculo con el relleno inicial conocido
+
+Cada `PixelBuffer` conserva la generación y el alfa de su última creación o
+relleno uniforme. Un bloque que aún tiene esa generación conserva ese alfa:
+no hay que leer sus píxeles para conocer sus límites. Una capa vacía sin
+modificaciones se reconoce mirando solo la tabla pequeña de versiones.
+
+La generación reservada para la siguiente escritura es distinta de la del
+relleno. Así, incluso la primera escritura sin historial ni caché invalida
+la prueba del bloque tocado. `fill` y `clear` vuelven a establecer una prueba
+uniforme y reservan otra generación para futuras modificaciones. Se añaden
+solo una generación y un alfa por buffer, sin nuevos mapas de píxeles.
+
+Se revisaron todos los accesos internos directos al almacenamiento. Recorte
+y redimensionado marcan como modificados los bloques copiados; el área nueva
+que conserva el relleno sigue siendo conocida. El acceso crudo mediante
+`data_mut` invalida todos los bloques. Las copias COW preservan su prueba inicial
+pero sus escrituras divergen con las generaciones existentes.
+
+La caché de cobertura combina ahora tres fuentes exactas: alfa conocido del
+relleno para bloques intactos, límites previamente calculados con la misma
+versión y lectura de los bloques restantes. Esto permite resolver la primera
+consulta de una capa recién dibujada sin necesitar una entrada previa en caché.
+Se conservan los límites de 64 entradas y 4 MiB de vectores de metadatos.
+
+### Primer cambio de opacidad
+
+Se añade una escena de capa vacía al benchmark. Se midieron las mismas ocho
+escenas antes y después con:
+
+```powershell
+cargo run --release -p rspaint-editor --example sparse_layer_changes_bench --offline
+```
+
+Tiempo CPU del primer ajuste: acción, cálculo de límites, composición y
+preparación de bytes. El lienzo ya había sido compuesto inicialmente, pero
+la cobertura de la capa aún no había sido consultada. El parche se crea con
+escrituras por fila sobre una capa inicialmente transparente.
+
+| Escena, ocho capas | Primer ajuste anterior → actual | Bytes preparados actuales |
+| --- | ---: | ---: |
+| 1920 × 1080, parche arriba | 2,213 → 0,216 ms | 38 400 |
+| 1920 × 1080, parche debajo | 2,700 → 0,629 ms | 38 400 |
+| 1920 × 1080, parche en grupo | 2,103 → 0,158 ms | 38 400 |
+| 1920 × 1080, capa vacía | 2,097 → 0,003 ms | 0 |
+| 6000 × 4000, parche arriba | 26,028 → 2,022 ms | 38 400 |
+| 6000 × 4000, parche debajo | 23,641 → 0,849 ms | 38 400 |
+| 6000 × 4000, parche en grupo | 24,573 → 1,983 ms | 38 400 |
+| 6000 × 4000, capa vacía | 17,788 → 0,004 ms | 0 |
+
+Son primeras consultas individuales, no percentiles ni garantías. Las zonas
+ya analizadas conservan sus tiempos posteriores y la subida regional. No se
+incluyen GPU, eventos nativos ni presentación. Se repiten también las ocho
+escenas con `--after-paint` como control; la escena inicialmente vacía recibe
+un punto nuevo en cada muestra y termina preparando como máximo 28 bytes.
+Las dieciséis escenas posteriores y las ocho anteriores comparan el compuesto
+completo con la referencia.
+
+Datos: [coverage-seed-before-results.txt](coverage-seed-before-results.txt),
+[coverage-seed-results.txt](coverage-seed-results.txt) y
+[coverage-seed-paint-control-results.txt](coverage-seed-paint-control-results.txt).
+
+### Verificación y límites
+
+Las pruebas verifican que no se lean píxeles para la primera consulta vacía
+y que un punto previo a la primera consulta obligue a leer solo su bloque.
+Se comprueba la prueba de alfa contra los píxeles de todos los bloques que
+se declaran conocidos después de escribir, rellenar, clonar, recortar y
+redimensionar con y sin desplazamiento. El historial, escritura cruda y
+restauraciones mantienen las pruebas existentes de igualdad.
+
+La mejora depende de conservar la prueba del relleno. Los datos importados
+por acceso crudo, algunas reconstrucciones y los bloques realmente escritos
+siguen pudiendo requerir lectura. El presupuesto de metadatos y el rectángulo
+global de la capa siguen limitando los casos optimizables.
+
+Siguiente caso: capas con contenido en zonas muy separadas, que todavía se
+engloban en un rectángulo grande aunque la mayor parte esté vacía.
+
+Verificación: `cargo test --workspace --offline` pasa 217 pruebas y deja una
+de portapapeles ignorada. Pasan `cargo fmt --all -- --check` y `git diff --check`.
+
+## Decimonovena etapa: límites incrementales tras pintar
+
+La caché de cobertura conserva ahora límites por bloque de 128 × 128 y las
+versiones inmutables que ya usa el historial. Tras una edición, busca una
+entrada de las mismas dimensiones con versiones coincidentes y reutiliza los
+límites de esos bloques, incluidos los vacíos. Solo lee los píxeles de bloques
+cuyas versiones han cambiado. Los límites globales se vuelven a unir, de modo
+que también pueden reducirse al borrar contenido. No se guardan píxeles de origen.
+
+Los aciertos de identidad débil continúan siendo inmediatos. La prueba de
+bordes para imágenes densas conserva su ruta rápida. Las entradas cuya fuente
+de píxeles ya murió pueden aportar versiones y límites válidos de bloques;
+por eso se retienen hasta su expulsión, sin retener sus buffers RGBA.
+
+Se conservan como máximo 64 entradas. Las capacidades de los vectores de
+límites y versiones tienen además un presupuesto contabilizado de 4 MiB por
+documento; las tablas compartidas se cuentan conservadoramente por entrada.
+Entradas que excederían por sí solas ese presupuesto conservan solo el límite
+global y recurren a una inspección completa. Esto no cambia los 32 MiB de
+píxeles de la caché de composición. Objetos, referencias débiles, asignador y
+temporales para construir una nueva entrada no forman parte de esos 4 MiB.
+
+Retener una tabla de versiones fuerza su separación antes de la siguiente
+escritura, usando el mecanismo COW existente. De ese modo, una misma versión
+significa los mismos píxeles de bloque, incluso entre clones y restauraciones
+de historial. Un acceso crudo mediante `data_mut` invalida todos los bloques:
+la optimización no supone que una escritura arbitraria sea local.
+
+### Medición del flujo con pintura
+
+```powershell
+cargo run --release -p rspaint-editor --example sparse_layer_changes_bench --offline -- --after-paint
+```
+
+Se conservan las seis escenas de la etapa 18. Después del primer cambio de
+opacidad, cada muestra incluye pintar un punto nuevo dentro del parche,
+confirmar el trazo en el historial, cambiar opacidad y preparar la subida.
+Se usan las APIs de trazo del editor, que conservan pendiente la zona pintada
+para unirla con la invalidación de metadatos. La línea base usa la caché global
+de la etapa 18 con exactamente la misma opción de benchmark.
+
+| Escena, parche 120 × 80 | Mediana anterior → actual | Máximo anterior → actual |
+| --- | ---: | ---: |
+| 1920 × 1080, arriba | 1,515 → 0,160 ms | 1,709 → 0,206 ms |
+| 1920 × 1080, debajo | 2,157 → 0,630 ms | 2,537 → 0,672 ms |
+| 1920 × 1080, grupo | 1,692 → 0,241 ms | 2,130 → 0,357 ms |
+| 6000 × 4000, arriba | 15,332 → 0,281 ms | 15,562 → 0,326 ms |
+| 6000 × 4000, debajo | 15,774 → 0,899 ms | 16,730 → 0,951 ms |
+| 6000 × 4000, grupo | 17,114 → 0,375 ms | 19,869 → 0,438 ms |
+
+Son medianas de siete eventos consecutivos de pintura más opacidad y
+composición/preparación en CPU, sin GPU, eventos de ventana ni presentación.
+Los cambios siguen preparando 38 400 bytes. Cada escena verifica el compuesto
+final completo contra la referencia. Se mantiene también el control de seis
+escenas sin pintura entre ajustes, con sus comparaciones exactas.
+
+Datos: [coverage-incremental-before-results.txt](coverage-incremental-before-results.txt),
+[coverage-incremental-results.txt](coverage-incremental-results.txt) y
+[coverage-incremental-control-results.txt](coverage-incremental-control-results.txt).
+
+### Límites y siguiente caso
+
+La primera consulta sin metadatos previos todavía inspecciona toda una capa
+dispersa. En el ensayo con pintura, el primer cambio grande pasó de 16–18 ms
+a 18–25 ms según la escena: no se mejora ese caso y construir los límites por
+bloque puede añadir trabajo. La ganancia requiere una entrada compatible
+anterior; tras expulsión, cambio de dimensiones, escritura cruda o modificación
+de todos los bloques puede hacer falta un recorrido completo.
+
+Las pruebas verifican contadores de bloques leídos sin depender del reloj:
+un punto cambia uno de nueve bloques, una fila que cruza el borde cambia dos,
+y `fill` y `data_mut` vuelven a inspeccionarlos todos. También cubren borrado,
+clones divergentes, restauración del historial y expulsión por presupuesto de
+metadatos, comprobando que no sobreviven propietarios fuertes de los píxeles.
+
+Siguiente caso: reducir la primera consulta de capas nuevas, donde aún no
+existen límites anteriores que se puedan reutilizar.
+
+Verificación: `cargo test --workspace --offline` pasa 214 pruebas y deja una
+de portapapeles ignorada. Pasan `cargo fmt --all -- --check` y `git diff --check`.
+
+## Decimoctava etapa: cambios de capas con contenido localizado
+
+Opacidad, visibilidad y modo de fusión invalidan ahora el rectángulo que engloba
+los píxeles con alfa distinto de cero del nodo, recortado al lienzo. Las capas
+vacías actualizan metadatos e historial sin solicitar una subida de píxeles.
+Si el rectángulo abarca todo el lienzo, se conserva la ruta completa que comparte
+el `Arc` del compuesto; no se copia una imagen entera mediante la ruta regional.
+
+`Document::layer_content_bounds` obtiene los píxeles activos del buffer de
+trabajo, incluso durante una vista previa con marcador de 1 × 1 en el árbol.
+Para grupos une el contenido de sus descendientes visibles y con opacidad
+positiva. Ignora las propiedades propias del nodo consultado: volver a mostrar
+un nodo o subir su opacidad debe poder exponer todo su contenido. Los modos
+actuales operan por píxel y no expanden ese rectángulo. Los RGB bajo alfa cero
+no cuentan como contenido que pueda alterar el compuesto.
+
+La caché nueva guarda como máximo 64 identidades de buffer y sus rectángulos,
+incluidos resultados vacíos. Usa referencias débiles, dimensiones y antigüedad,
+sin retener los bytes de origen. Cualquier mutación mediante las APIs del buffer
+invalida su identidad débil; cambios de visibilidad de los descendientes se
+vuelven a evaluar al unir un grupo. La caché se clona fría y se limpia al
+reemplazar una imagen. No modifica el presupuesto de 32 MiB de píxeles del
+compositor: añade metadatos acotados, contabilizados aparte.
+
+Una consulta sin metadatos puede recorrer toda la capa. Cuando se prueba que
+hay alfa no nulo en los cuatro bordes, el rectángulo completo se determina sin
+recorrer el interior; una imagen densa suele necesitar solo cuatro píxeles.
+Una modificación posterior exige aprender los límites otra vez. Los cambios
+de metadatos sobre píxeles que permanecen iguales reutilizan el rectángulo.
+
+### Medición de capas dispersas
+
+```powershell
+cargo run --release -p rspaint-editor --example sparse_layer_changes_bench --offline
+```
+
+Ocho capas, seis texturas estáticas detalladas compartidas para limitar RAM,
+un fondo blanco y una capa transparente con un parche de 120 × 80 y alfa 180.
+Se prueba la capa arriba, debajo de las texturas y dentro de un grupo aislado
+que contiene solo esa capa. El primer cambio mide también la consulta inicial
+de límites. Después se miden siete cambios de opacidad y seis de visibilidad.
+Los tiempos incluyen acción, composición y bytes preparados, sin GPU ni ventana.
+
+| Escena | Opacidad, mediana anterior → actual | Visibilidad, mediana anterior → actual | Primer cambio actual |
+| --- | ---: | ---: | ---: |
+| 1920 × 1080, arriba | 4,476 → 0,123 ms | 4,293 → 0,124 ms | 1,447 ms |
+| 1920 × 1080, debajo | 29,255 → 0,686 ms | 29,158 → 0,677 ms | 2,293 ms |
+| 1920 × 1080, grupo | 6,248 → 0,137 ms | 5,963 → 0,134 ms | 1,522 ms |
+| 6000 × 4000, arriba | 256,999 → 0,122 ms | 247,668 → 0,124 ms | 17,049 ms |
+| 6000 × 4000, debajo | 301,311 → 0,501 ms | 295,522 → 0,504 ms | 12,591 ms |
+| 6000 × 4000, grupo | 232,790 → 0,136 ms | 229,614 → 0,139 ms | 16,910 ms |
+
+En el documento grande, cada subida preparada pasa de 96 000 000 a 38 400 bytes,
+2500 veces menos bytes RGBA. No es una medición de transferencia GPU. Los
+resultados solo representan esta distribución localizada; una capa densa o
+manchas separadas con un rectángulo grande no reciben el mismo ahorro. La
+primera consulta sigue siendo mucho más costosa que las posteriores.
+Cada escena compara el compuesto completo final con la referencia.
+
+Datos: [sparse-layer-before-results.txt](sparse-layer-before-results.txt) y
+[sparse-layer-results.txt](sparse-layer-results.txt). También se repiten las
+ocho sesiones originales como control denso, con comprobaciones de píxeles:
+[sparse-layer-dense-control-results.txt](sparse-layer-dense-control-results.txt).
+No se atribuye una mejora a sus variaciones entre ejecuciones.
+
+### Verificación y siguiente caso
+
+Las pruebas cubren los trece modos sobre capas y grupos, limpiar los píxeles al
+ocultar, RGB con alfa cero, escrituras que amplían o reducen los límites, clones
+que divergen, acceso por fila y acceso crudo, grupos ocultos, opacidad cero,
+el buffer activo durante un trazo, unión con cambios regionales pendientes y
+conservación de una invalidación completa anterior. Las capas vacías mantienen
+su historial y no borran otras actualizaciones pendientes. La ruta densa prueba
+la identidad del `Arc` subido para conservar la subida completa compartida.
+
+Siguiente caso: reducir el primer cálculo de límites después de pintar, que
+todavía puede recorrer toda una capa grande aunque solo haya cambiado una zona.
+
+Verificación: `cargo test --workspace --offline` pasa 211 pruebas y deja una
+de portapapeles ignorada. Pasan `cargo fmt --all -- --check` y `git diff --check`.
+
+## Decimoséptima etapa: redondeo general, transparencia y otros modos
+
+La conversión exacta de la etapa 16 se aplica ahora también al compositor
+genérico: alfa sobre un destino vacío, alfa resultante y canales RGB de los
+trece modos. No cambian las funciones de fusión, su orden de cálculo ni el
+muestreo espacial de Disolver. La fórmula se comparte entre dos instancias
+con parámetro constante: producción usa la conversión nueva y las pruebas
+mantienen una instancia con `round().clamp()` como oráculo. No hay un selector
+de estrategia en tiempo de ejecución ni almacenamiento adicional.
+
+La prueba nueva compara 159 744 combinaciones: los trece modos, los 256 alfas
+de origen, ocho alfas de destino, seis opacidades y coordenadas globales que
+varían con los colores. Las comparaciones por píxel existentes usan también
+el oráculo con redondeo antiguo. Se conserva la prueba de más de un millón
+de patrones f32 y los límites semienteros de la etapa anterior.
+
+### Sesiones con modos combinados
+
+Se añade `--mixed` al benchmark de sesiones. Las siete capas de textura usan
+cíclicamente Normal, Multiplicar, Trama y Superponer, con el mismo ruido RGB
+y alfa 140 de las escenas originales. Las escenas con una sola capa siguen
+siendo controles Normal. Se midieron las ocho escenas antes y después de
+modificar el compositor, sin cambiar la fixture entre ambas ejecuciones:
+
+```powershell
+cargo run --release -p rspaint-editor --example interaction_session_bench --offline -- --mixed
+```
+
+Mediana de siete cambios de opacidad, acción y composición/preparación en CPU:
+
+| Escena con modos combinados | Anterior → actual |
+| --- | ---: |
+| 1920 × 1080, una capa (control) | 9,604 → 6,164 ms |
+| 1920 × 1080, activa arriba | 26,474 → 24,200 ms |
+| 1920 × 1080, activa debajo | 83,306 → 65,773 ms |
+| 1920 × 1080, grupos anidados | 86,548 → 80,968 ms |
+| 6000 × 4000, una capa (control) | 53,456 → 54,001 ms |
+| 6000 × 4000, activa arriba | 751,813 → 529,155 ms |
+| 6000 × 4000, activa debajo | 892,298 → 654,576 ms |
+| 6000 × 4000, grupos anidados | 792,552 → 570,269 ms |
+
+Los tres casos grandes con varias capas reducen esta mediana alrededor de
+27–30 %. Son pocas muestras y una ejecución por configuración; no se atribuye
+cada diferencia de los controles al cambio de redondeo. Datos completos de
+las líneas base y posterior en
+[interaction-mixed-before-results.txt](interaction-mixed-before-results.txt) y
+[interaction-mixed-results.txt](interaction-mixed-results.txt).
+
+### Control Normal y grupos con transparencia
+
+Se repiten además las ocho escenas Normal, con datos en
+[interaction-generic-results.txt](interaction-generic-results.txt). Frente a la
+etapa 16, la mediana de opacidad de la escena grande con activa arriba pasa
+de 267,172 a 262,235 ms: la ruta especializada previa se conserva. En grupos
+anidados, la mediana pasa de 87,039 a 57,482 ms en 1920 × 1080 y de 397,922
+a 344,569 ms en 6000 × 4000. No se promete una mejora uniforme para todos los
+documentos o modos: divisiones, mezcla y composición completa siguen teniendo
+coste propio.
+
+Las dieciséis sesiones posteriores pasan las comparaciones de vista previa,
+cancelación, historial e imagen final. Las ocho sesiones mixtas anteriores
+también pasan sus comprobaciones. No se miden eventos de ventana, GPU ni
+presentación. La caché y sus límites, el número máximo de hilos y la política
+de admisión no se modifican en esta etapa.
+
+Siguiente caso: evitar que cambiar opacidad o visibilidad de una capa con
+contenido en una región pequeña obligue a recomponer y subir todo el lienzo.
+
+Verificación: `cargo test --workspace --offline` pasa 204 pruebas y deja una
+de portapapeles ignorada. Pasan `cargo fmt --all -- --check` y `git diff --check`.
+
+## Decimosexta etapa: conversión exacta a bytes en Normal sobre fondo opaco
+
+La ruta especializada de mezcla Normal conserva la aritmética normalizada y
+su orden, pero sustituye la conversión final `round().clamp(... ) as u8` por
+`(f64::from(value) + 0.5) as u8`. Solo se ensancha el valor final ya calculado;
+no se cambia el cálculo de alfa o color anterior. La referencia genérica
+`blend_pixel` conserva el redondeo original.
+
+Para los valores que pueden cambiar un byte entre 0 y 255, el ensanchamiento
+preserva exactamente el valor f32 y permite sumar 0,5 sin perder la distancia
+a los límites de redondeo. La conversión a u8 trunca y satura. Los negativos
+y NaN terminan en cero, y los valores altos e infinitos positivos en 255, igual
+que la expresión de referencia. Es importante ensanchar antes de sumar:
+sumar 0,5 en f32 puede llevar el predecesor de un semientero al entero siguiente
+y cambiar un píxel. No se aplica una aproximación entera a la mezcla.
+
+La prueba nueva compara todos los 256 semienteros relevantes, cuatro valores
+representables a cada lado, sus negativos, ceros, infinitos, NaN y extremos,
+además de 1 048 576 patrones de bits pseudoaleatorios. Se mantienen las pruebas
+de la mezcla especializada contra `blend_pixel` para alfa, opacidad y canales.
+No se añade almacenamiento, caché ni hilos.
+
+### Sesiones repetidas
+
+Se ejecuta `interaction_session_bench` con las mismas ocho escenas. Medianas
+de acción y composición/preparación de subida en CPU; la línea base es la
+etapa 15, guardada en `interaction-medium-results.txt`:
+
+| Escena | Opacidad anterior → actual | Visibilidad anterior → actual |
+| --- | ---: | ---: |
+| 1920 × 1080, una capa | 9,945 → 6,500 ms | 9,782 → 6,454 ms |
+| 1920 × 1080, activa arriba | 58,947 → 21,457 ms | 57,820 → 19,803 ms |
+| 1920 × 1080, activa debajo | 75,317 → 34,663 ms | 73,841 → 33,448 ms |
+| 1920 × 1080, grupos anidados | 118,069 → 87,039 ms | 84,624 → 87,068 ms |
+| 6000 × 4000, una capa | 43,070 → 53,794 ms | 43,994 → 55,362 ms |
+| 6000 × 4000, activa arriba | 578,140 → 267,172 ms | 587,681 → 275,807 ms |
+| 6000 × 4000, activa debajo | 767,038 → 342,022 ms | 764,895 → 342,363 ms |
+| 6000 × 4000, grupos anidados | 683,009 → 397,922 ms | 651,072 → 339,797 ms |
+
+Las escenas grandes con ocho capas y fondo opaco mejoran alrededor de 2,1–2,2
+veces en opacidad/visibilidad con activa arriba o debajo. Los casos de una
+capa o mezclas sobre transparencia no son el objetivo de la especialización;
+sus diferencias entre ejecuciones no se atribuyen a ella. Las medianas de
+curvas con activa debajo pasan de 13,524 a 6,926 ms en 1920 × 1080 y de
+11,789 a 5,826 ms en 6000 × 4000. Las pausas de cambios completos grandes
+persisten, aunque menores.
+
+Son siete cambios de opacidad, seis de visibilidad y 24 movimientos de curva
+por escena, con los límites de muestreo descritos en el informe de validación.
+No se incluyen GPU, eventos nativos ni presentación. Las ocho sesiones pasan
+las comparaciones exactas de vista previa, cancelación, historial e imagen final.
+Datos completos: [interaction-rounding-results.txt](interaction-rounding-results.txt).
+
+Verificación: `cargo test --workspace --offline` pasa 203 pruebas y deja una
+de portapapeles ignorada. Pasan `cargo fmt --all -- --check` y `git diff --check`.
+
+## Decimoquinta etapa: curvas bajo capas detalladas y regiones medianas
+
+El coste identificado en las curvas era principalmente la recomposición de
+las capas superiores sobre el resultado activo. No se cambia el cálculo de
+curvas, el pincel ni su suavizado. Se amplía la admisión de recorridos paralelos
+a regiones de más de 131 072 píxeles que contienen capas visibles superiores
+al activo cuya mezcla depende de él y no puede reutilizarse como un fondo.
+Se recorren también los grupos que contienen la rama activa, ignorando las
+ramas ocultas y de opacidad cero.
+
+En esos casos, la primera fila de temporales tiene 64 píxeles de alto en vez
+de 256: así no se consume la mayor parte de una vista previa antes de decidir.
+Solo se distribuye el resto si hay al menos 16 384 píxeles de muestra y 65 536
+pendientes, la muestra tarda al menos 2 ms, su coste normalizado supera o iguala
+50 ms por 1 048 576 píxeles y el coste serial restante estimado alcanza 8 ms.
+Las regiones pequeñas y los recorridos baratos siguen en serie. Para más de
+8 388 608 píxeles pendientes se conserva el criterio grande de la etapa 13.
+
+La restricción de topología es necesaria: un ensayo exploratorio sin ella
+ralentizaba cambios de opacidad con la activa arriba, porque evitaba llenar
+una caché que podía almacenar todo el fondo de 1920 × 1080. La versión final
+no usa esta nueva prueba mediana cuando el trabajo se limita al activo y
+fondos o interiores de grupos estáticos cacheables. La política de caché para
+recorridos grandes sigue disponible por separado.
+
+### Sesiones repetidas
+
+`cargo run --release -p rspaint-editor --example interaction_session_bench --offline`
+repite las ocho escenas. La siguiente tabla usa las medianas de los 24
+movimientos de control de curva: tiempo CPU de acción y composición/preparación
+de subida, sin GPU ni latencia de ventana. La línea base es la ejecución de
+la etapa 14, conservada en `interaction-history-results.txt`.
+
+| Curva, escena | Mediana anterior → actual | Percentil 95 anterior → actual |
+| --- | ---: | ---: |
+| 1920 × 1080, una capa | 1,263 → 1,493 ms | 1,373 → 1,669 ms |
+| 1920 × 1080, activa arriba | 4,652 → 5,449 ms | 4,802 → 5,706 ms |
+| 1920 × 1080, activa debajo | 35,190 → 13,524 ms | 36,884 → 14,054 ms |
+| 1920 × 1080, grupos anidados | 9,036 → 12,272 ms | 9,468 → 12,373 ms |
+| 6000 × 4000, una capa | 1,033 → 0,834 ms | 1,089 → 0,955 ms |
+| 6000 × 4000, activa arriba | 5,148 → 3,795 ms | 5,476 → 4,116 ms |
+| 6000 × 4000, activa debajo | 43,563 → 11,789 ms | 44,293 → 11,997 ms |
+| 6000 × 4000, grupos anidados | 8,936 → 8,727 ms | 10,034 → 8,939 ms |
+
+Los dos casos objetivo mejoran unas 2,6 y 3,7 veces. Sus 24 movimientos quedan
+por debajo de 16,7 ms de CPU en esta ejecución; eso no garantiza 60 FPS en la
+ventana. Los demás casos no reciben esta nueva ruta mediana y las diferencias
+entre ejecuciones no se atribuyen a una optimización. Se conservan los datos
+completos, incluidos los controles y la variación, en
+[interaction-medium-results.txt](interaction-medium-results.txt).
+
+El cambio también permite repartir cambios completos de una imagen de
+1920 × 1080 cuando hay capas costosas por encima del activo. Las subidas
+completas grandes aún pueden causar pausas: esta etapa no elimina ese coste.
+
+### Exactitud y límites
+
+El benchmark ahora compara además toda la imagen de la curva antes de
+cancelarla, fuera del tiempo medido. Así no basta con que la cancelación
+restaure correctamente una vista previa potencialmente incorrecta. Se siguen
+comprobando cancelación, deshacer/rehacer e imagen final de cada sesión.
+
+Las pruebas nuevas comprueban admisión con duraciones suministradas, exclusión
+de ramas ocultas y cacheables y composición mediana con origen no alineado,
+recorte de bordes, grupos y los trece modos contra la referencia. Se mantiene
+el límite de ocho hilos y la misma caché acotada; no se retiene información de
+tiempos entre movimientos. Los tiempos de pared y la estimación del prefijo
+pueden elegir una estrategia menos rentable cuando el contenido o la carga
+del sistema varían dentro del recorrido, conservando los píxeles exactos.
+
+Verificación: `cargo test --workspace --offline` pasa 202 pruebas y deja una
+de portapapeles ignorada. Pasan `cargo fmt --all -- --check` y `git diff --check`.
+
+## Decimocuarta etapa: una sola composición al restaurar historial
+
+`Document::restore_history` sigue dejando el compuesto completo calculado,
+conservando el contrato público y la posibilidad de muestrearlo inmediatamente.
+El editor distingue ahora una subida completa cuyo compuesto ya está listo de
+una invalidación que todavía exige recomponer. Deshacer, rehacer y saltar a un
+nodo del historial usan esta subida lista; `take_pending_upload` comparte sus
+píxeles sin volver a recorrer las capas.
+
+Una nueva invalidación completa o regional revoca la reutilización. Esto
+incluye pintar, cambiar opacidad, cambiar de documento o invalidar el lienzo
+antes de consumir la subida del historial. La ruta de deshacer una operación
+de selección continúa invalidando normalmente porque solo restaura el buffer,
+sin calcular previamente el compuesto. Se conserva la subida completa cuando
+hay cambios regionales posteriores a un historial aún pendiente de subir.
+
+Dos pruebas de integración comprueban la validez inmediata del compuesto y
+la identidad del `Arc` enviado. Al retener otra referencia, cualquier escritura
+innecesaria forzaría COW y fallaría la comparación de identidad; no se depende
+del reloj para probar la eliminación del trabajo. Se cubren deshacer/rehacer,
+saltos, restauraciones consecutivas sin render intermedio, cambios de tamaño y
+ediciones antes de consumir la subida.
+
+Se repite la sesión de ocho escenas descrita en
+[interaction-validation.md](interaction-validation.md), preservando el informe
+y los resultados anteriores como línea base. Los resultados nuevos quedan en
+[interaction-history-results.txt](interaction-history-results.txt).
+
+Percentil 95 de acción más preparación de subida, en milisegundos. Cada celda
+muestra la línea base anterior y la ejecución posterior con la corrección:
+
+| Escena | Deshacer anterior → actual | Rehacer anterior → actual |
+| --- | ---: | ---: |
+| 1920 × 1080, una capa | 2,688 → 1,192 | 20,130 → 9,768 |
+| 1920 × 1080, activa arriba | 4,910 → 2,566 | 117,342 → 58,836 |
+| 1920 × 1080, activa debajo | 586,196 → 328,281 | 611,968 → 383,294 |
+| 1920 × 1080, grupos anidados | 126,108 → 64,246 | 269,783 → 120,772 |
+| 6000 × 4000, una capa | 25,275 → 15,188 | 91,980 → 49,789 |
+| 6000 × 4000, activa arriba | 1215,761 → 536,869 | 1437,293 → 640,688 |
+| 6000 × 4000, activa debajo | 1707,044 → 774,614 | 1840,797 → 942,220 |
+| 6000 × 4000, grupos anidados | 1327,797 → 638,738 | 1453,737 → 781,050 |
+
+En la escena grande con activa arriba, las medianas pasan de 1175,565 a
+524,062 ms al deshacer y de 1302,989 a 601,598 ms al rehacer. Preparar la subida
+después de restaurar tarda como máximo unos 0,001 ms en estas muestras, en vez
+de volver a componer. Quedan la restauración y una composición completa en el
+tiempo de la acción; los casos detallados siguen pudiendo causar pausas.
+
+Son tres pares por escena, al deshacer y rehacer el último cambio de visibilidad
+de la sesión. El percentil 95 equivale al máximo de esas tres muestras; no es
+una garantía estadística ni una medición GPU o de latencia de pantalla. Las
+pruebas de integración también cubren historial con pintura y redimensionado.
+Las ocho sesiones pasan sus comprobaciones de píxeles y referencia completa.
+
+Verificación: `cargo test --workspace --offline` pasa 199 pruebas y deja una
+de portapapeles ignorada. Pasan `cargo fmt --all -- --check` y `git diff --check`.
+
+## Validación de sesiones del editor
+
+Se añade `interaction_session_bench`: ocho sesiones con movimientos reales de
+las herramientas, preparación de subida por evento, capas e historial, en
+1920 × 1080 y 6000 × 4000. Registra percentiles y comprueba cancelación,
+deshacer/rehacer y la imagen final contra la referencia. No modifica los
+algoritmos de producción.
+
+El primer candidato detectado es la doble composición al deshacer/rehacer.
+También quedan pausas en curvas bajo varias capas detalladas y en cambios
+completos de opacidad/visibilidad. El informe distingue estas mediciones CPU
+de la comprobación de la ventana nativa, limitada por un fallo del controlador
+de entrada: [interaction-validation.md](interaction-validation.md).
+
 ## Decimotercera etapa: trabajo caro sin fondo estático detallado
 
 Se añade una segunda señal para admitir la composición paralela: el coste

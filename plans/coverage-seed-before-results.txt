@@ -1,0 +1,16 @@
+1920x1080 above, 8 layers, ink120x80: cold=2.213ms 38400B; opacity median=0.125ms max=0.131ms; visibility median=0.124ms max=0.126ms; max_upload=38400B
+  complete reference passed
+1920x1080 below, 8 layers, ink120x80: cold=2.700ms 38400B; opacity median=0.665ms max=0.681ms; visibility median=0.684ms max=0.760ms; max_upload=38400B
+  complete reference passed
+1920x1080 group, 8 layers, ink120x80: cold=2.103ms 38400B; opacity median=0.136ms max=0.143ms; visibility median=0.137ms max=0.139ms; max_upload=38400B
+  complete reference passed
+1920x1080 empty, 8 layers, inkempty: cold=2.097ms 0B; opacity median=0.000ms max=0.001ms; visibility median=0.004ms max=0.011ms; max_upload=0B
+  complete reference passed
+6000x4000 above, 8 layers, ink120x80: cold=26.028ms 38400B; opacity median=0.124ms max=0.133ms; visibility median=0.126ms max=0.126ms; max_upload=38400B
+  complete reference passed
+6000x4000 below, 8 layers, ink120x80: cold=23.641ms 38400B; opacity median=0.668ms max=0.675ms; visibility median=0.672ms max=0.688ms; max_upload=38400B
+  complete reference passed
+6000x4000 group, 8 layers, ink120x80: cold=24.573ms 38400B; opacity median=0.136ms max=0.141ms; visibility median=0.138ms max=0.144ms; max_upload=38400B
+  complete reference passed
+6000x4000 empty, 8 layers, inkempty: cold=17.788ms 0B; opacity median=0.000ms max=0.002ms; visibility median=0.003ms max=0.015ms; max_upload=0B
+  complete reference passed

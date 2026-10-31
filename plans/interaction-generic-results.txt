@@ -1,0 +1,118 @@
+1920x1080 single (8 layers except single; static storage shared, active independent):
+  Pencil down: n=1 total p50=0.055ms p95=0.055ms max=0.055ms; action p95=0.052ms compose/stage p95=0.003ms; >16.7ms=0 >50ms=0; max_upload=4B
+  Pencil moves size=1 smoothing=0: n=32 total p50=0.001ms p95=0.009ms max=0.010ms; action p95=0.009ms compose/stage p95=0.001ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Pencil release/commit: n=1 total p50=0.033ms p95=0.033ms max=0.033ms; action p95=0.032ms compose/stage p95=0.002ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Brush down: n=1 total p50=1.556ms p95=1.556ms max=1.556ms; action p95=1.361ms compose/stage p95=0.196ms; >16.7ms=0 >50ms=0; max_upload=268324B
+  Brush moves size=256 smoothing=50: n=32 total p50=0.232ms p95=0.280ms max=0.315ms; action p95=0.177ms compose/stage p95=0.122ms; >16.7ms=0 >50ms=0; max_upload=285156B
+  Brush release/commit: n=1 total p50=1.245ms p95=1.245ms max=1.245ms; action p95=1.089ms compose/stage p95=0.157ms; >16.7ms=0 >50ms=0; max_upload=305784B
+  curve control moves: n=24 total p50=1.068ms p95=1.225ms max=1.231ms; action p95=0.716ms compose/stage p95=0.590ms; >16.7ms=0 >50ms=0; max_upload=1006068B
+  curve cancel: n=1 total p50=1.392ms p95=1.392ms max=1.392ms; action p95=0.649ms compose/stage p95=0.743ms; >16.7ms=0 >50ms=0; max_upload=1003632B
+  opacity drag: n=7 total p50=6.183ms p95=6.452ms max=6.452ms; action p95=0.001ms compose/stage p95=6.451ms; >16.7ms=0 >50ms=0; max_upload=8294400B
+  visibility toggles: n=6 total p50=6.285ms p95=6.792ms max=6.792ms; action p95=0.004ms compose/stage p95=6.790ms; >16.7ms=0 >50ms=0; max_upload=8294400B
+  undo: n=3 total p50=0.998ms p95=1.285ms max=1.285ms; action p95=1.285ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=8294400B
+  redo: n=3 total p50=5.982ms p95=6.151ms max=6.151ms; action p95=6.151ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=8294400B
+  checks: curve cancel, undo/redo and full reference passed
+1920x1080 top (8 layers except single; static storage shared, active independent):
+  Pencil down: n=1 total p50=0.079ms p95=0.079ms max=0.079ms; action p95=0.070ms compose/stage p95=0.009ms; >16.7ms=0 >50ms=0; max_upload=4B
+  Pencil moves size=1 smoothing=0: n=32 total p50=0.003ms p95=0.039ms max=0.049ms; action p95=0.036ms compose/stage p95=0.005ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Pencil release/commit: n=1 total p50=0.146ms p95=0.146ms max=0.146ms; action p95=0.139ms compose/stage p95=0.007ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Brush down: n=1 total p50=2.005ms p95=2.005ms max=2.005ms; action p95=1.512ms compose/stage p95=0.493ms; >16.7ms=0 >50ms=0; max_upload=268324B
+  Brush moves size=256 smoothing=50: n=32 total p50=0.437ms p95=0.734ms max=0.763ms; action p95=0.285ms compose/stage p95=0.441ms; >16.7ms=0 >50ms=0; max_upload=285156B
+  Brush release/commit: n=1 total p50=1.691ms p95=1.691ms max=1.691ms; action p95=1.359ms compose/stage p95=0.332ms; >16.7ms=0 >50ms=0; max_upload=305784B
+  curve control moves: n=24 total p50=2.521ms p95=3.577ms max=3.682ms; action p95=1.115ms compose/stage p95=2.567ms; >16.7ms=0 >50ms=0; max_upload=1006068B
+  curve cancel: n=1 total p50=2.529ms p95=2.529ms max=2.529ms; action p95=0.580ms compose/stage p95=1.948ms; >16.7ms=0 >50ms=0; max_upload=1003632B
+  layer selection: n=6 total p50=0.000ms p95=0.005ms max=0.005ms; action p95=0.004ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=0B
+  opacity drag: n=7 total p50=20.452ms p95=20.982ms max=20.982ms; action p95=0.001ms compose/stage p95=20.982ms; >16.7ms=7 >50ms=0; max_upload=8294400B
+  visibility toggles: n=6 total p50=19.695ms p95=20.212ms max=20.212ms; action p95=0.009ms compose/stage p95=20.208ms; >16.7ms=3 >50ms=0; max_upload=8294400B
+  undo: n=3 total p50=2.294ms p95=2.407ms max=2.407ms; action p95=2.407ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=8294400B
+  redo: n=3 total p50=20.696ms p95=21.198ms max=21.198ms; action p95=21.198ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=0; max_upload=8294400B
+  checks: curve cancel, undo/redo and full reference passed
+1920x1080 below (8 layers except single; static storage shared, active independent):
+  Pencil down: n=1 total p50=0.096ms p95=0.096ms max=0.096ms; action p95=0.069ms compose/stage p95=0.027ms; >16.7ms=0 >50ms=0; max_upload=4B
+  Pencil moves size=1 smoothing=0: n=32 total p50=0.004ms p95=0.021ms max=0.024ms; action p95=0.009ms compose/stage p95=0.013ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Pencil release/commit: n=1 total p50=0.072ms p95=0.072ms max=0.072ms; action p95=0.045ms compose/stage p95=0.027ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Brush down: n=1 total p50=5.138ms p95=5.138ms max=5.138ms; action p95=1.287ms compose/stage p95=3.851ms; >16.7ms=0 >50ms=0; max_upload=268324B
+  Brush moves size=256 smoothing=50: n=32 total p50=4.118ms p95=5.560ms max=5.607ms; action p95=0.266ms compose/stage p95=5.341ms; >16.7ms=0 >50ms=0; max_upload=285156B
+  Brush release/commit: n=1 total p50=5.682ms p95=5.682ms max=5.682ms; action p95=1.130ms compose/stage p95=4.552ms; >16.7ms=0 >50ms=0; max_upload=305784B
+  curve control moves: n=24 total p50=5.991ms p95=6.994ms max=7.287ms; action p95=0.994ms compose/stage p95=6.319ms; >16.7ms=0 >50ms=0; max_upload=1006068B
+  curve cancel: n=1 total p50=5.965ms p95=5.965ms max=5.965ms; action p95=0.540ms compose/stage p95=5.424ms; >16.7ms=0 >50ms=0; max_upload=1003632B
+  layer selection: n=6 total p50=0.000ms p95=0.005ms max=0.005ms; action p95=0.005ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=0B
+  opacity drag: n=7 total p50=31.014ms p95=31.432ms max=31.432ms; action p95=0.000ms compose/stage p95=31.432ms; >16.7ms=7 >50ms=0; max_upload=8294400B
+  visibility toggles: n=6 total p50=30.221ms p95=30.948ms max=30.948ms; action p95=0.010ms compose/stage p95=30.940ms; >16.7ms=6 >50ms=0; max_upload=8294400B
+  undo: n=3 total p50=26.706ms p95=26.733ms max=26.733ms; action p95=26.733ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=0; max_upload=8294400B
+  redo: n=3 total p50=31.135ms p95=31.521ms max=31.521ms; action p95=31.521ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=0; max_upload=8294400B
+  checks: curve cancel, undo/redo and full reference passed
+1920x1080 nested (8 layers except single; static storage shared, active independent):
+  Pencil down: n=1 total p50=0.040ms p95=0.040ms max=0.040ms; action p95=0.034ms compose/stage p95=0.006ms; >16.7ms=0 >50ms=0; max_upload=4B
+  Pencil moves size=1 smoothing=0: n=32 total p50=0.003ms p95=0.012ms max=0.012ms; action p95=0.008ms compose/stage p95=0.007ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Pencil release/commit: n=1 total p50=0.054ms p95=0.054ms max=0.054ms; action p95=0.045ms compose/stage p95=0.009ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Brush down: n=1 total p50=2.972ms p95=2.972ms max=2.972ms; action p95=1.388ms compose/stage p95=1.584ms; >16.7ms=0 >50ms=0; max_upload=268324B
+  Brush moves size=256 smoothing=50: n=32 total p50=1.579ms p95=2.061ms max=2.380ms; action p95=0.208ms compose/stage p95=1.796ms; >16.7ms=0 >50ms=0; max_upload=285156B
+  Brush release/commit: n=1 total p50=3.086ms p95=3.086ms max=3.086ms; action p95=1.146ms compose/stage p95=1.941ms; >16.7ms=0 >50ms=0; max_upload=305784B
+  curve control moves: n=24 total p50=6.617ms p95=7.045ms max=7.113ms; action p95=0.746ms compose/stage p95=6.371ms; >16.7ms=0 >50ms=0; max_upload=1006068B
+  curve cancel: n=1 total p50=6.234ms p95=6.234ms max=6.234ms; action p95=0.353ms compose/stage p95=5.881ms; >16.7ms=0 >50ms=0; max_upload=1003632B
+  layer selection: n=6 total p50=0.001ms p95=0.006ms max=0.006ms; action p95=0.006ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=0B
+  opacity drag: n=7 total p50=57.482ms p95=81.425ms max=81.425ms; action p95=0.000ms compose/stage p95=81.425ms; >16.7ms=7 >50ms=7; max_upload=8294400B
+  visibility toggles: n=6 total p50=82.926ms p95=85.838ms max=85.838ms; action p95=0.010ms compose/stage p95=85.828ms; >16.7ms=6 >50ms=6; max_upload=8294400B
+  undo: n=3 total p50=56.747ms p95=56.802ms max=56.802ms; action p95=56.801ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=3; max_upload=8294400B
+  redo: n=3 total p50=80.726ms p95=83.559ms max=83.559ms; action p95=83.558ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=3; max_upload=8294400B
+  checks: curve cancel, undo/redo and full reference passed
+6000x4000 single (8 layers except single; static storage shared, active independent):
+  Pencil down: n=1 total p50=0.072ms p95=0.072ms max=0.072ms; action p95=0.070ms compose/stage p95=0.002ms; >16.7ms=0 >50ms=0; max_upload=4B
+  Pencil moves size=1 smoothing=0: n=32 total p50=0.001ms p95=0.012ms max=0.016ms; action p95=0.011ms compose/stage p95=0.002ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Pencil release/commit: n=1 total p50=0.114ms p95=0.114ms max=0.114ms; action p95=0.112ms compose/stage p95=0.002ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Brush down: n=1 total p50=2.457ms p95=2.457ms max=2.457ms; action p95=2.245ms compose/stage p95=0.212ms; >16.7ms=0 >50ms=0; max_upload=268324B
+  Brush moves size=256 smoothing=50: n=32 total p50=0.313ms p95=0.348ms max=0.386ms; action p95=0.240ms compose/stage p95=0.127ms; >16.7ms=0 >50ms=0; max_upload=285156B
+  Brush release/commit: n=1 total p50=1.641ms p95=1.641ms max=1.641ms; action p95=1.429ms compose/stage p95=0.212ms; >16.7ms=0 >50ms=0; max_upload=305784B
+  curve control moves: n=24 total p50=1.039ms p95=1.104ms max=1.274ms; action p95=0.722ms compose/stage p95=0.402ms; >16.7ms=0 >50ms=0; max_upload=1006068B
+  curve cancel: n=1 total p50=0.972ms p95=0.972ms max=0.972ms; action p95=0.335ms compose/stage p95=0.636ms; >16.7ms=0 >50ms=0; max_upload=1003632B
+  opacity drag: n=7 total p50=54.439ms p95=56.168ms max=56.168ms; action p95=0.001ms compose/stage p95=56.168ms; >16.7ms=7 >50ms=7; max_upload=96000000B
+  visibility toggles: n=6 total p50=45.023ms p95=45.509ms max=45.509ms; action p95=0.009ms compose/stage p95=45.506ms; >16.7ms=3 >50ms=0; max_upload=96000000B
+  undo: n=3 total p50=12.162ms p95=13.163ms max=13.163ms; action p95=13.163ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=96000000B
+  redo: n=3 total p50=42.889ms p95=44.789ms max=44.789ms; action p95=44.789ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=0; max_upload=96000000B
+  checks: curve cancel, undo/redo and full reference passed
+6000x4000 top (8 layers except single; static storage shared, active independent):
+  Pencil down: n=1 total p50=0.293ms p95=0.293ms max=0.293ms; action p95=0.056ms compose/stage p95=0.237ms; >16.7ms=0 >50ms=0; max_upload=4B
+  Pencil moves size=1 smoothing=0: n=32 total p50=0.002ms p95=0.223ms max=0.225ms; action p95=0.009ms compose/stage p95=0.214ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Pencil release/commit: n=1 total p50=0.301ms p95=0.301ms max=0.301ms; action p95=0.068ms compose/stage p95=0.234ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Brush down: n=1 total p50=4.662ms p95=4.662ms max=4.662ms; action p95=1.499ms compose/stage p95=3.163ms; >16.7ms=0 >50ms=0; max_upload=268324B
+  Brush moves size=256 smoothing=50: n=32 total p50=0.350ms p95=0.990ms max=1.035ms; action p95=0.196ms compose/stage p95=0.839ms; >16.7ms=0 >50ms=0; max_upload=285156B
+  Brush release/commit: n=1 total p50=2.671ms p95=2.671ms max=2.671ms; action p95=1.219ms compose/stage p95=1.452ms; >16.7ms=0 >50ms=0; max_upload=305784B
+  curve control moves: n=24 total p50=2.074ms p95=2.226ms max=2.258ms; action p95=0.649ms compose/stage p95=1.598ms; >16.7ms=0 >50ms=0; max_upload=1006068B
+  curve cancel: n=1 total p50=2.409ms p95=2.409ms max=2.409ms; action p95=0.751ms compose/stage p95=1.658ms; >16.7ms=0 >50ms=0; max_upload=1003632B
+  layer selection: n=6 total p50=0.000ms p95=0.004ms max=0.004ms; action p95=0.004ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=0B
+  opacity drag: n=7 total p50=262.235ms p95=271.216ms max=271.216ms; action p95=0.001ms compose/stage p95=271.216ms; >16.7ms=7 >50ms=7; max_upload=96000000B
+  visibility toggles: n=6 total p50=262.485ms p95=267.380ms max=267.380ms; action p95=0.014ms compose/stage p95=267.367ms; >16.7ms=6 >50ms=6; max_upload=96000000B
+  undo: n=3 total p50=229.331ms p95=229.676ms max=229.676ms; action p95=229.676ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=3; max_upload=96000000B
+  redo: n=3 total p50=266.009ms p95=271.491ms max=271.491ms; action p95=271.491ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=3; max_upload=96000000B
+  checks: curve cancel, undo/redo and full reference passed
+6000x4000 below (8 layers except single; static storage shared, active independent):
+  Pencil down: n=1 total p50=0.081ms p95=0.081ms max=0.081ms; action p95=0.060ms compose/stage p95=0.021ms; >16.7ms=0 >50ms=0; max_upload=4B
+  Pencil moves size=1 smoothing=0: n=32 total p50=0.004ms p95=0.022ms max=0.024ms; action p95=0.010ms compose/stage p95=0.013ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Pencil release/commit: n=1 total p50=0.100ms p95=0.100ms max=0.100ms; action p95=0.072ms compose/stage p95=0.027ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Brush down: n=1 total p50=5.299ms p95=5.299ms max=5.299ms; action p95=1.553ms compose/stage p95=3.746ms; >16.7ms=0 >50ms=0; max_upload=268324B
+  Brush moves size=256 smoothing=50: n=32 total p50=4.081ms p95=4.990ms max=5.646ms; action p95=0.303ms compose/stage p95=4.784ms; >16.7ms=0 >50ms=0; max_upload=285156B
+  Brush release/commit: n=1 total p50=5.494ms p95=5.494ms max=5.494ms; action p95=1.187ms compose/stage p95=4.307ms; >16.7ms=0 >50ms=0; max_upload=305784B
+  curve control moves: n=24 total p50=5.685ms p95=5.986ms max=6.010ms; action p95=0.688ms compose/stage p95=5.258ms; >16.7ms=0 >50ms=0; max_upload=1006068B
+  curve cancel: n=1 total p50=5.488ms p95=5.488ms max=5.488ms; action p95=0.298ms compose/stage p95=5.190ms; >16.7ms=0 >50ms=0; max_upload=1003632B
+  layer selection: n=6 total p50=0.000ms p95=0.004ms max=0.004ms; action p95=0.004ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=0B
+  opacity drag: n=7 total p50=340.156ms p95=353.098ms max=353.098ms; action p95=0.001ms compose/stage p95=353.098ms; >16.7ms=7 >50ms=7; max_upload=96000000B
+  visibility toggles: n=6 total p50=349.698ms p95=364.051ms max=364.051ms; action p95=0.021ms compose/stage p95=364.041ms; >16.7ms=6 >50ms=6; max_upload=96000000B
+  undo: n=3 total p50=293.120ms p95=316.464ms max=316.464ms; action p95=316.464ms compose/stage p95=0.001ms; >16.7ms=3 >50ms=3; max_upload=96000000B
+  redo: n=3 total p50=338.821ms p95=363.793ms max=363.793ms; action p95=363.792ms compose/stage p95=0.001ms; >16.7ms=3 >50ms=3; max_upload=96000000B
+  checks: curve cancel, undo/redo and full reference passed
+6000x4000 nested (8 layers except single; static storage shared, active independent):
+  Pencil down: n=1 total p50=0.320ms p95=0.320ms max=0.320ms; action p95=0.083ms compose/stage p95=0.236ms; >16.7ms=0 >50ms=0; max_upload=4B
+  Pencil moves size=1 smoothing=0: n=32 total p50=0.003ms p95=0.226ms max=0.230ms; action p95=0.011ms compose/stage p95=0.216ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Pencil release/commit: n=1 total p50=0.311ms p95=0.311ms max=0.311ms; action p95=0.080ms compose/stage p95=0.231ms; >16.7ms=0 >50ms=0; max_upload=684B
+  Brush down: n=1 total p50=5.805ms p95=5.805ms max=5.805ms; action p95=1.479ms compose/stage p95=4.326ms; >16.7ms=0 >50ms=0; max_upload=268324B
+  Brush moves size=256 smoothing=50: n=32 total p50=1.638ms p95=2.396ms max=2.566ms; action p95=0.219ms compose/stage p95=2.196ms; >16.7ms=0 >50ms=0; max_upload=285156B
+  Brush release/commit: n=1 total p50=3.646ms p95=3.646ms max=3.646ms; action p95=0.973ms compose/stage p95=2.673ms; >16.7ms=0 >50ms=0; max_upload=305784B
+  curve control moves: n=24 total p50=7.121ms p95=8.022ms max=8.056ms; action p95=0.936ms compose/stage p95=7.255ms; >16.7ms=0 >50ms=0; max_upload=1006068B
+  curve cancel: n=1 total p50=6.270ms p95=6.270ms max=6.270ms; action p95=0.461ms compose/stage p95=5.809ms; >16.7ms=0 >50ms=0; max_upload=1003632B
+  layer selection: n=6 total p50=0.000ms p95=0.005ms max=0.005ms; action p95=0.005ms compose/stage p95=0.000ms; >16.7ms=0 >50ms=0; max_upload=0B
+  opacity drag: n=7 total p50=344.569ms p95=365.971ms max=365.971ms; action p95=0.001ms compose/stage p95=365.970ms; >16.7ms=7 >50ms=7; max_upload=96000000B
+  visibility toggles: n=6 total p50=331.587ms p95=349.405ms max=349.405ms; action p95=0.014ms compose/stage p95=349.391ms; >16.7ms=6 >50ms=6; max_upload=96000000B
+  undo: n=3 total p50=318.886ms p95=341.850ms max=341.850ms; action p95=341.850ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=3; max_upload=96000000B
+  redo: n=3 total p50=368.991ms p95=435.629ms max=435.629ms; action p95=435.629ms compose/stage p95=0.000ms; >16.7ms=3 >50ms=3; max_upload=96000000B
+  checks: curve cancel, undo/redo and full reference passed

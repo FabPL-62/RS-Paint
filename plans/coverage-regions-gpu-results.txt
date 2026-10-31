@@ -1,0 +1,5 @@
+adapter: AdapterInfo { name: "NVIDIA GeForce RTX 3060 Ti", vendor: 4318, device: 9350, device_type: DiscreteGpu, driver: "NVIDIA", driver_info: "621.01", backend: Vulkan }
+1920x1080 separated-opacity-8: CPU compose/stage median=0.250ms p95=0.340ms; prepare/upload enqueue median=0.030ms p95=0.039ms; submit-to-complete median=0.180ms p95=0.791ms; draw GPU median=0.031ms p95=0.033ms; pipeline median=0.511ms p95=1.230ms (7 samples)
+  cache: CompositionCacheStats { stored_pixel_bytes: 8294400, uncompressed_pixel_bytes: 8294400, entries: 510, direct_scan_workers: 0 }
+6000x4000 separated-opacity-8: CPU compose/stage median=0.191ms p95=0.206ms; prepare/upload enqueue median=0.016ms p95=0.024ms; submit-to-complete median=0.181ms p95=0.199ms; draw GPU median=0.070ms p95=0.074ms; pipeline median=0.416ms p95=0.464ms (7 samples)
+  cache: CompositionCacheStats { stored_pixel_bytes: 6340608, uncompressed_pixel_bytes: 6340608, entries: 388, direct_scan_workers: 0 }

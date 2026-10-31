@@ -1,0 +1,13 @@
+Each opacity event includes a one-pixel stroke and history commit before the metadata change
+1920x1080 above, 8 layers, ink120x80: cold=1.611ms 38400B; opacity median=1.515ms max=1.709ms; visibility median=0.121ms max=0.124ms; max_upload=38400B
+  complete reference passed
+1920x1080 below, 8 layers, ink120x80: cold=2.085ms 38400B; opacity median=2.157ms max=2.537ms; visibility median=0.771ms max=0.792ms; max_upload=38400B
+  complete reference passed
+1920x1080 group, 8 layers, ink120x80: cold=1.558ms 38400B; opacity median=1.692ms max=2.130ms; visibility median=0.264ms max=0.269ms; max_upload=38400B
+  complete reference passed
+6000x4000 above, 8 layers, ink120x80: cold=17.564ms 38400B; opacity median=15.332ms max=15.562ms; visibility median=0.127ms max=0.130ms; max_upload=38400B
+  complete reference passed
+6000x4000 below, 8 layers, ink120x80: cold=16.007ms 38400B; opacity median=15.774ms max=16.730ms; visibility median=0.768ms max=0.783ms; max_upload=38400B
+  complete reference passed
+6000x4000 group, 8 layers, ink120x80: cold=18.438ms 38400B; opacity median=17.114ms max=19.869ms; visibility median=0.177ms max=0.197ms; max_upload=38400B
+  complete reference passed

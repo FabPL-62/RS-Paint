@@ -1,0 +1,12 @@
+1920x1080 above, 8 layers, ink120x80: cold=4.987ms 8294400B; opacity median=4.476ms max=5.159ms; visibility median=4.293ms max=4.594ms; max_upload=8294400B
+  complete reference passed
+1920x1080 below, 8 layers, ink120x80: cold=31.080ms 8294400B; opacity median=29.255ms max=29.726ms; visibility median=29.158ms max=35.462ms; max_upload=8294400B
+  complete reference passed
+1920x1080 group, 8 layers, ink120x80: cold=6.704ms 8294400B; opacity median=6.248ms max=6.526ms; visibility median=5.963ms max=7.504ms; max_upload=8294400B
+  complete reference passed
+6000x4000 above, 8 layers, ink120x80: cold=250.867ms 96000000B; opacity median=256.999ms max=264.336ms; visibility median=247.668ms max=250.063ms; max_upload=96000000B
+  complete reference passed
+6000x4000 below, 8 layers, ink120x80: cold=305.828ms 96000000B; opacity median=301.311ms max=308.847ms; visibility median=295.522ms max=304.412ms; max_upload=96000000B
+  complete reference passed
+6000x4000 group, 8 layers, ink120x80: cold=234.819ms 96000000B; opacity median=232.790ms max=245.394ms; visibility median=229.614ms max=241.713ms; max_upload=96000000B
+  complete reference passed
