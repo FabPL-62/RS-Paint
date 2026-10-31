@@ -25,12 +25,13 @@ struct Queries {
     read: wgpu::Buffer,
 }
 
-const CASES: [&str; 5] = [
+const CASES: [&str; 6] = [
     "partial-1",
     "partial-upper-32",
     "full-upload-1",
     "opacity-8",
     "detailed-opacity-8",
+    "separated-opacity-8",
 ];
 
 fn editor_for_case(width: u32, height: u32, case: &str) -> Editor {
@@ -38,14 +39,14 @@ fn editor_for_case(width: u32, height: u32, case: &str) -> Editor {
     e.load_buffer(PixelBuffer::new(width, height, Color::WHITE), None);
     let count = match case {
         "partial-upper-32" => 32,
-        "opacity-8" | "detailed-opacity-8" => 8,
+        "opacity-8" | "detailed-opacity-8" | "separated-opacity-8" => 8,
         _ => 1,
     };
     if count > 1 {
         // Share uniform source storage to bound fixture RAM. This still blends
         // every layer and does not model independently allocated layer memory.
         let mut pixels = PixelBuffer::new(width, height, Color::rgba(60, 130, 190, 140));
-        if case == "detailed-opacity-8" {
+        if matches!(case, "detailed-opacity-8" | "separated-opacity-8") {
             let mut seed = 0x12345678u32;
             for p in pixels.data_mut().chunks_exact_mut(4) {
                 seed ^= seed << 13;
@@ -61,8 +62,28 @@ fn editor_for_case(width: u32, height: u32, case: &str) -> Editor {
         );
         e.document.next_id = 100 + count;
     }
-    if matches!(case, "opacity-8" | "detailed-opacity-8") {
+    if matches!(
+        case,
+        "opacity-8" | "detailed-opacity-8" | "separated-opacity-8"
+    ) {
         e.select_layer(100, false, false);
+    }
+    if case == "separated-opacity-8" {
+        let mut sparse = PixelBuffer::transparent(width, height);
+        let mx = (width / 5).min(300);
+        let my = (height / 5).min(300);
+        let w = (width / 6).clamp(1, 120);
+        let h = (height / 6).clamp(1, 80);
+        for (x, y) in [(mx, my), (width - mx - w, height - my - h)] {
+            for row in y..y + h {
+                for p in sparse.row_mut(row, x, w).chunks_exact_mut(4) {
+                    p.copy_from_slice(&[20, 90, 160, 180]);
+                }
+            }
+        }
+        e.document.buffer = sparse;
+        e.document.sync_active();
+        e.invalidate_canvas();
     }
     let mut ids = std::collections::HashSet::new();
     for node in &e.document.layers {
@@ -268,7 +289,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 &callback,
                 queries.as_ref(),
             )?;
-            e.begin_stroke((230, 240), PointerButton::Primary);
+            if case != "separated-opacity-8" {
+                e.begin_stroke((230, 240), PointerButton::Primary);
+            }
             let mut stage_times = Vec::new();
             let mut prepare_times = Vec::new();
             let mut submit_times = Vec::new();
@@ -276,17 +299,22 @@ async fn run() -> Result<(), Box<dyn Error>> {
             let mut totals = Vec::new();
             for i in 0..9 {
                 let start = Instant::now();
-                e.update_stroke(
-                    (
-                        if i % 2 == 0 { 294 + i } else { 230 + i },
-                        if i % 2 == 0 { 288 } else { 240 },
-                    ),
-                    false,
-                );
+                if case != "separated-opacity-8" {
+                    e.update_stroke(
+                        (
+                            if i % 2 == 0 { 294 + i } else { 230 + i },
+                            if i % 2 == 0 { 288 } else { 240 },
+                        ),
+                        false,
+                    );
+                }
                 if case == "full-upload-1" {
                     e.invalidate_canvas();
                 }
-                if matches!(case, "opacity-8" | "detailed-opacity-8") {
+                if matches!(
+                    case,
+                    "opacity-8" | "detailed-opacity-8" | "separated-opacity-8"
+                ) {
                     e.set_layer_opacity(100, 50 + i as u8);
                 }
                 let staging = Instant::now();
@@ -331,7 +359,10 @@ mod tests {
         for case in CASES {
             let e = editor_for_case(32, 24, case);
             assert_eq!((e.document.width(), e.document.height()), (32, 24));
-            if matches!(case, "opacity-8" | "detailed-opacity-8") {
+            if matches!(
+                case,
+                "opacity-8" | "detailed-opacity-8" | "separated-opacity-8"
+            ) {
                 assert_eq!(e.active_layer_id(), 100);
                 assert!(e.layer_selection().contains(&100));
             }
