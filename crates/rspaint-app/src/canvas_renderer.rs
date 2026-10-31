@@ -192,7 +192,7 @@ pub use rspaint_editor::Upload;
 
 /// Survives discarded egui layout passes until a GPU callback consumes it.
 #[derive(Clone, Default)]
-pub struct PendingUpload(std::sync::Arc<std::sync::Mutex<Option<Upload>>>);
+pub struct PendingUpload(std::sync::Arc<std::sync::Mutex<Option<Vec<Upload>>>>);
 
 impl PendingUpload {
     pub fn stage(&self, editor: &mut rspaint_editor::Editor) {
@@ -202,12 +202,13 @@ impl PendingUpload {
             // Replace it with the latest full snapshot rather than losing pixels.
             editor.invalidate_canvas();
         }
-        if let Some(upload) = editor.take_pending_upload() {
-            *pending = Some(upload);
+        let uploads = editor.take_pending_uploads();
+        if !uploads.is_empty() {
+            *pending = Some(uploads);
         }
     }
 
-    fn take(&self) -> Option<Upload> {
+    fn take(&self) -> Option<Vec<Upload>> {
         self.0.lock().expect("canvas upload lock").take()
     }
 }
@@ -434,31 +435,33 @@ impl CallbackTrait for CanvasCallback {
         ];
         window.ensure_texture(device, bind_group_layout, sampler, size);
 
-        if let Some(upload) = self.upload.take() {
-            if let Some(texture) = window.texture.as_ref() {
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: upload.x,
-                            y: upload.y,
-                            z: 0,
+        if let Some(uploads) = self.upload.take() {
+            for upload in uploads {
+                if let Some(texture) = window.texture.as_ref() {
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d {
+                                x: upload.x,
+                                y: upload.y,
+                                z: 0,
+                            },
+                            aspect: wgpu::TextureAspect::All,
                         },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &upload.data,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(upload.width * 4),
-                        rows_per_image: Some(upload.height),
-                    },
-                    wgpu::Extent3d {
-                        width: upload.width,
-                        height: upload.height,
-                        depth_or_array_layers: 1,
-                    },
-                );
+                        &upload.data,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(upload.width * 4),
+                            rows_per_image: Some(upload.height),
+                        },
+                        wgpu::Extent3d {
+                            width: upload.width,
+                            height: upload.height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
             }
         }
 
@@ -505,7 +508,9 @@ mod tests {
         let discarded_callback = pending.clone();
         drop(discarded_callback);
         pending.stage(&mut editor);
-        let upload = pending.take().expect("initial image still needs uploading");
+        let mut uploads = pending.take().expect("initial image still needs uploading");
+        assert_eq!(uploads.len(), 1);
+        let upload = uploads.remove(0);
         assert_eq!(
             [upload.width, upload.height],
             [editor.document.width(), editor.document.height()]
@@ -526,11 +531,50 @@ mod tests {
         editor.begin_stroke((8, 8), PointerButton::Primary);
         editor.end_stroke(false);
         pending.stage(&mut editor);
-        let upload = pending.take().unwrap();
+        let mut uploads = pending.take().unwrap();
+        assert_eq!(uploads.len(), 1);
+        let upload = uploads.remove(0);
         assert_eq!([upload.width, upload.height], [16, 16]);
         assert_eq!(upload.data.as_slice(), editor.document.buffer.data());
         // After the backend consumes the snapshot, unchanged frames send nothing.
         pending.stage(&mut editor);
         assert!(pending.take().is_none());
+    }
+
+    #[test]
+    fn separated_batches_and_unrendered_changes_preserve_all_pixels() {
+        let mut editor = Editor::new();
+        editor.load_buffer(PixelBuffer::new(512, 384, Color::WHITE), None);
+        editor.add_layer();
+        let layer = editor.active_layer_id();
+        editor.document.buffer.set(0, 0, Color::BLACK);
+        editor.document.buffer.set(511, 383, Color::BLACK);
+        editor.commit("Corners");
+        let pending = PendingUpload::default();
+        pending.stage(&mut editor);
+        pending.take();
+        editor.set_layer_opacity(layer, 50);
+        pending.stage(&mut editor);
+        let patches = pending.take().unwrap();
+        assert_eq!(patches.len(), 2);
+        let mut texture = PixelBuffer::new(512, 384, Color::WHITE);
+        for patch in patches {
+            for y in 0..patch.height {
+                let from = (y * patch.width * 4) as usize;
+                texture
+                    .row_mut(patch.y + y, patch.x, patch.width)
+                    .copy_from_slice(&patch.data[from..from + patch.width as usize * 4]);
+            }
+        }
+        assert_eq!(texture, editor.document.composite);
+        editor.set_layer_opacity(layer, 37);
+        pending.stage(&mut editor);
+        editor.begin_stroke((200, 200), PointerButton::Primary);
+        editor.end_stroke(false);
+        pending.stage(&mut editor);
+        let patches = pending.take().unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!((patches[0].width, patches[0].height), (512, 384));
+        assert_eq!(patches[0].data.as_slice(), editor.document.composite.data());
     }
 }

@@ -12,6 +12,7 @@ pub mod brush;
 pub mod buffer;
 pub mod color;
 mod composite_cache;
+mod coverage_cache;
 pub mod document;
 pub mod draw;
 pub mod fill;

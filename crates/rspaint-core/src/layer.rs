@@ -127,6 +127,38 @@ fn dissolve_sample(x: u32, y: u32) -> f32 {
 
 /// Composites `src` over `dst` with a blend mode and layer opacity.
 fn blend_pixel(dst: Color, src: Color, opacity: f32, mode: LayerBlend, x: u32, y: u32) -> Color {
+    blend_pixel_with_rounding::<true>(dst, src, opacity, mode, x, y)
+}
+
+#[cfg(test)]
+fn blend_pixel_reference(
+    dst: Color,
+    src: Color,
+    opacity: f32,
+    mode: LayerBlend,
+    x: u32,
+    y: u32,
+) -> Color {
+    blend_pixel_with_rounding::<false>(dst, src, opacity, mode, x, y)
+}
+
+fn blend_pixel_with_rounding<const FAST: bool>(
+    dst: Color,
+    src: Color,
+    opacity: f32,
+    mode: LayerBlend,
+    x: u32,
+    y: u32,
+) -> Color {
+    // Monomorphize the original conversion for tests, preserving an oracle
+    // independent of rounded_byte without duplicating the blend formula.
+    let byte = |value: f32| {
+        if FAST {
+            rounded_byte(value)
+        } else {
+            value.round().clamp(0.0, 255.0) as u8
+        }
+    };
     let mut source_alpha = src.a as f32 / 255.0 * opacity;
     if source_alpha <= 0.0 {
         return dst;
@@ -146,7 +178,7 @@ fn blend_pixel(dst: Color, src: Color, opacity: f32, mode: LayerBlend, x: u32, y
     let dst_alpha = dst.a as f32 / 255.0;
     if dst_alpha <= 0.0 {
         // Nothing underneath: the blend mode has no backdrop to act on.
-        return Color::rgba(src.r, src.g, src.b, (source_alpha * 255.0).round() as u8);
+        return Color::rgba(src.r, src.g, src.b, byte(source_alpha * 255.0));
     }
 
     let source = [
@@ -168,14 +200,9 @@ fn blend_pixel(dst: Color, src: Color, opacity: f32, mode: LayerBlend, x: u32, y
         let color = source_alpha * (1.0 - dst_alpha) * source[index]
             + source_alpha * dst_alpha * blended[index]
             + (1.0 - source_alpha) * dst_alpha * backdrop[index];
-        (color / out_alpha * 255.0).round().clamp(0.0, 255.0) as u8
+        byte(color / out_alpha * 255.0)
     };
-    Color::rgba(
-        channel(0),
-        channel(1),
-        channel(2),
-        (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8,
-    )
+    Color::rgba(channel(0), channel(1), channel(2), byte(out_alpha * 255.0))
 }
 
 const fn normalized_channels() -> [f32; 256] {
@@ -188,6 +215,14 @@ const fn normalized_channels() -> [f32; 256] {
     values
 }
 const NORMALIZED_CHANNELS: [f32; 256] = normalized_channels();
+
+#[inline(always)]
+fn rounded_byte(value: f32) -> u8 {
+    // Preserve round-to-nearest, ties away from zero, followed by saturation.
+    // Widen before adding 0.5: f32 addition can round a value just below a
+    // half-integer onto the boundary and change a reference pixel.
+    (f64::from(value) + 0.5) as u8
+}
 
 // Exact Normal blend on an opaque backdrop; avoid the generic mode dispatch
 // and repeated byte-to-unit divisions while retaining the reference rounding.
@@ -208,13 +243,13 @@ fn normal_on_opaque(dst: Color, src: Color, opacity: f32) -> Color {
         } else {
             value / out_alpha * 255.0
         };
-        value.round().clamp(0.0, 255.0) as u8
+        rounded_byte(value)
     };
     Color::rgba(
         channel(src.r, dst.r),
         channel(src.g, dst.g),
         channel(src.b, dst.b),
-        (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+        rounded_byte(out_alpha * 255.0),
     )
 }
 
@@ -739,7 +774,72 @@ pub(crate) fn blend_region_at(
 
 #[cfg(test)]
 mod tests {
+    use super::blend_pixel_reference as blend_pixel;
     use super::*;
+
+    #[test]
+    fn all_blend_modes_preserve_reference_bytes_for_alpha_opacity_and_coordinates() {
+        for mode in LayerBlend::ALL {
+            for alpha in 0..=255u8 {
+                for dest_alpha in [0, 1, 63, 127, 128, 191, 254, 255] {
+                    for opacity in [0, 1, 37, 50, 99, 100] {
+                        let src = Color::rgba(alpha.wrapping_mul(73), 255 - alpha, alpha, alpha);
+                        let dst = Color::rgba(
+                            255 - dest_alpha,
+                            dest_alpha,
+                            dest_alpha.wrapping_mul(37),
+                            dest_alpha,
+                        );
+                        let opacity = opacity as f32 / 100.0;
+                        let x = alpha as u32 * 257;
+                        let y = dest_alpha as u32 * 65537;
+                        assert_eq!(
+                            super::blend_pixel(dst, src, opacity, mode, x, y),
+                            blend_pixel(dst, src, opacity, mode, x, y),
+                            "{mode:?}, alpha {alpha}, dest {dest_alpha}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rounded_byte_matches_reference_at_every_threshold_and_random_float_bits() {
+        let check = |v: f32| {
+            assert_eq!(
+                rounded_byte(v),
+                v.round().clamp(0.0, 255.0) as u8,
+                "bits {:08x}",
+                v.to_bits()
+            )
+        };
+        for byte in 0..=255 {
+            let boundary = (byte as f32 + 0.5).to_bits();
+            for bits in boundary - 4..=boundary + 4 {
+                check(f32::from_bits(bits));
+                check(-f32::from_bits(bits));
+            }
+        }
+        for v in [
+            0.0,
+            -0.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::MAX,
+            f32::MIN,
+        ] {
+            check(v);
+        }
+        let mut seed = 0x12345678u32;
+        for _ in 0..1_048_576 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            check(f32::from_bits(seed));
+        }
+    }
 
     fn pixel(buffer: &PixelBuffer) -> Color {
         buffer.get(0, 0).unwrap()

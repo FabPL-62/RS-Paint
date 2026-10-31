@@ -33,6 +33,7 @@ pub struct CompositionCacheStats {
 #[derive(Clone, Debug)]
 pub struct Document {
     cache: crate::composite_cache::CompositeCache,
+    coverage_cache: crate::coverage_cache::CoverageCache,
     editing_active: Option<u64>,
     direct_scan_workers: usize,
     /// The working pixels of the active layer.
@@ -62,6 +63,49 @@ pub struct Document {
 }
 
 impl Document {
+    /// At most 32 separated content regions; falls back to a single bounding
+    /// rectangle when fragmentation or dense coverage would make batching costly.
+    pub fn layer_content_regions(&mut self, id: u64) -> Vec<Region> {
+        let Some(bounds) = self.layer_content_bounds(id) else {
+            return Vec::new();
+        };
+        let node = find_node(&self.layers, id).unwrap();
+        let Some(regions) = self
+            .coverage_cache
+            .regions(node, self.active, &self.buffer, 32)
+        else {
+            return vec![bounds];
+        };
+        let regions: Vec<_> = regions
+            .into_iter()
+            .filter_map(|r| {
+                let w = r.width.min(self.width().saturating_sub(r.x));
+                let h = r.height.min(self.height().saturating_sub(r.y));
+                (w > 0 && h > 0).then(|| Region::new(r.x, r.y, w, h))
+            })
+            .collect();
+        let area = regions.iter().fold(0u64, |sum, r| {
+            sum.saturating_add(r.width as u64 * r.height as u64)
+        });
+        if regions.len() > 1 && area.saturating_mul(4) < bounds.width as u64 * bounds.height as u64
+        {
+            regions
+        } else {
+            vec![bounds]
+        }
+    }
+
+    /// Conservative bounds of nonzero alpha, clipped to the canvas. The target
+    /// node's own visibility and opacity are ignored; descendants honor theirs.
+    /// Active-layer pixels always come from the canonical working buffer.
+    pub fn layer_content_bounds(&mut self, id: u64) -> Option<Region> {
+        let node = find_node(&self.layers, id)?;
+        let region = self.coverage_cache.node(node, self.active, &self.buffer)?;
+        let w = region.width.min(self.width().saturating_sub(region.x));
+        let h = region.height.min(self.height().saturating_sub(region.y));
+        (w > 0 && h > 0).then(|| Region::new(region.x, region.y, w, h))
+    }
+
     pub fn composition_cache_stats(&self) -> CompositionCacheStats {
         let (stored_pixel_bytes, uncompressed_pixel_bytes, entries) = self.cache.stats();
         CompositionCacheStats {
@@ -81,6 +125,7 @@ impl Document {
         ))];
         Self {
             cache: Default::default(),
+            coverage_cache: Default::default(),
             editing_active: None,
             direct_scan_workers: 0,
             composite: buffer.clone(),
@@ -113,6 +158,7 @@ impl Document {
         self.direct_scan_workers = 0;
         self.editing_active = None;
         self.cache = Default::default();
+        self.coverage_cache = Default::default();
         let layer_id = self.next_id;
         self.next_id += 1;
         self.layers = vec![LayerNode::Layer(Layer::new(
@@ -217,12 +263,18 @@ impl Document {
             return;
         }
         self.cache.begin_update();
-        let serial_started =
-            crate::parallel_composite::timed_scan_candidate(region).then(std::time::Instant::now);
+        let serial_started = (crate::parallel_composite::timed_scan_candidate(region)
+            && (region.width as u64 * region.height as u64 > 8 * 1024 * 1024
+                || crate::parallel_composite::has_uncached_upper_layers(
+                    &self.layers,
+                    self.active,
+                )))
+        .then(std::time::Instant::now);
         // Bound temporary images, including each nested group's intermediate,
         // to 256 KiB instead of allocating another full canvas per group.
         const TILE: usize = 256;
-        for ty in (y..end_y).step_by(TILE) {
+        let mut ty = y;
+        while ty < end_y {
             // Learn from completed rows even on the first composition. Keep
             // their pixels and cache; only the remaining rows change strategy.
             let remaining = Region::new(x, ty, end_x - x, end_y - ty);
@@ -241,9 +293,19 @@ impl Document {
                 self.render_direct(remaining);
                 return;
             }
+            // Probe medium previews with only 64 rows; a full 256-row prefix
+            // would consume most of a typical curve before making a decision.
+            let tile_height = if ty == y
+                && serial_started.is_some()
+                && region.width as u64 * region.height as u64 <= 8 * 1024 * 1024
+            {
+                64
+            } else {
+                TILE as u32
+            };
             for tx in (x..end_x).step_by(TILE) {
                 let w = (end_x - tx).min(TILE as u32);
-                let h = (end_y - ty).min(TILE as u32);
+                let h = (end_y - ty).min(tile_height);
                 let mut region = PixelBuffer::transparent(w, h);
                 self.cache.composite(
                     &self.layers,
@@ -255,6 +317,7 @@ impl Document {
                 );
                 self.composite.blit(&region, tx, ty);
             }
+            ty += (end_y - ty).min(tile_height);
         }
     }
 
@@ -369,6 +432,72 @@ impl Default for Document {
 mod tests {
     use super::*;
     use crate::layer::{find_node, LayerBlend};
+
+    #[test]
+    fn separated_regions_handle_corner_proofs_and_bound_fragmentation() {
+        let mut document = Document::new(512, 384);
+        document.buffer.fill(Color::TRANSPARENT);
+        document.buffer.set(0, 0, Color::BLACK);
+        document.buffer.set(511, 383, Color::BLACK);
+        let regions = document.layer_content_regions(1);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(
+            regions
+                .iter()
+                .map(|r| r.width as u64 * r.height as u64)
+                .sum::<u64>(),
+            2
+        );
+        document.buffer = PixelBuffer::transparent(4096, 256);
+        for i in 0..41 {
+            document
+                .buffer
+                .set(i % 32 * 128 + 2, i / 32 * 128 + 2, Color::BLACK);
+        }
+        let regions = document.layer_content_regions(1);
+        assert_eq!(
+            regions.len(),
+            1,
+            "fragmentation falls back to a bounded batch"
+        );
+        assert!(regions[0].width > 3900);
+    }
+
+    #[test]
+    fn medium_preview_bands_match_reference_with_groups_and_clipped_edges() {
+        let mut pixels = PixelBuffer::transparent(539, 409);
+        for (i, p) in pixels.data_mut().chunks_exact_mut(4).enumerate() {
+            p.copy_from_slice(&[i as u8, (i >> 8) as u8, (i * 73) as u8, 140]);
+        }
+        for mode in LayerBlend::ALL {
+            let mut document = Document::new(539, 409);
+            document.buffer = pixels.clone();
+            let mut upper = Layer::new(2, "Upper", pixels.clone());
+            upper.blend = mode;
+            let mut group = crate::LayerGroup::new(3, "Group");
+            group.opacity = 73;
+            group.blend = mode;
+            group.children.push(LayerNode::Layer(upper));
+            group.children.push(document.layers.pop().unwrap());
+            document.layers.push(LayerNode::Group(group));
+            let sentinel = Color::rgb(120, 30, 70);
+            document.composite.fill(sentinel);
+            // Nonaligned origin, medium region and clamped right/bottom edges.
+            let region = Region::new(7, 5, 532, 404);
+            let mut expected = PixelBuffer::new(539, 409, sentinel);
+            let mut tile = PixelBuffer::transparent(region.width, region.height);
+            composite_region(
+                &document.layers,
+                document.active,
+                &document.buffer,
+                region,
+                &mut tile,
+            );
+            expected.blit(&tile, region.x, region.y);
+            document.composite_rect(7, 5, 600, 500);
+            assert_eq!(document.composite, expected, "{mode:?}");
+        }
+    }
 
     #[test]
     fn default_uses_jspaint_dimensions() {

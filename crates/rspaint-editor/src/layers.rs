@@ -332,13 +332,60 @@ impl Editor {
         self.commit("Rename Layer");
     }
 
+    fn mark_layer_content(&mut self, id: u64) {
+        let regions = self.document.layer_content_regions(id);
+        if regions.len() > 1 {
+            let mut rects = Vec::with_capacity(regions.len());
+            for r in regions {
+                if let [Ok(x0), Ok(y0), Ok(x1), Ok(y1)] =
+                    [r.x, r.y, r.x + r.width - 1, r.y + r.height - 1].map(i32::try_from)
+                {
+                    rects.push(RectI { x0, y0, x1, y1 });
+                } else {
+                    self.mark_full();
+                    return;
+                }
+            }
+            self.mark_regions(rects);
+            return;
+        }
+        if let Some(bounds) = regions.first().copied() {
+            if bounds.x == 0
+                && bounds.y == 0
+                && bounds.width == self.document.width()
+                && bounds.height == self.document.height()
+            {
+                // Preserve the full-canvas shared upload instead of copying
+                // an entire RGBA image through the regional upload path.
+                self.mark_full();
+                return;
+            }
+            let coordinates = [
+                bounds.x,
+                bounds.y,
+                bounds.x + bounds.width - 1,
+                bounds.y + bounds.height - 1,
+            ];
+            if let [Ok(x0), Ok(y0), Ok(x1), Ok(y1)] = coordinates.map(i32::try_from) {
+                self.mark_rect(RectI { x0, y0, x1, y1 });
+            } else {
+                self.mark_full();
+            }
+        } else {
+            // Empty content changes metadata/history, but cannot change the
+            // displayed pixels. Preserve any other upload already pending.
+            self.document.active_revision = self.document.active_revision.wrapping_add(1);
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
     pub fn toggle_layer_visible(&mut self, id: u64) {
         let Some(node) = rspaint_core::layer::find_node_mut(&mut self.document.layers, id) else {
             return;
         };
         let visible = !node.visible();
         node.set_visible(visible);
-        self.mark_full();
+        self.mark_layer_content(id);
         self.commit("Layer Visibility");
     }
 
@@ -358,7 +405,7 @@ impl Editor {
         };
         if node.opacity() != opacity.min(100) {
             node.set_opacity(opacity);
-            self.mark_full();
+            self.mark_layer_content(id);
         }
     }
 
@@ -368,7 +415,7 @@ impl Editor {
         };
         if node.blend() != blend {
             node.set_blend(blend);
-            self.mark_full();
+            self.mark_layer_content(id);
             self.commit("Layer Blend");
         }
     }

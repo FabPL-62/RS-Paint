@@ -1,5 +1,23 @@
 use super::*;
 
+fn merge_region(regions: &mut Vec<RectI>, mut rect: RectI) {
+    let mut i = 0;
+    while i < regions.len() {
+        let other = regions[i];
+        if rect.x0 as i64 <= other.x1 as i64 + 1
+            && other.x0 as i64 <= rect.x1 as i64 + 1
+            && rect.y0 as i64 <= other.y1 as i64 + 1
+            && other.y0 as i64 <= rect.y1 as i64 + 1
+        {
+            rect = rect.union(regions.swap_remove(i));
+            i = 0;
+        } else {
+            i += 1;
+        }
+    }
+    regions.push(rect);
+}
+
 impl Editor {
     /// A new document must not inherit previews or drag snapshots from the old one.
     fn clear_interaction(&mut self) {
@@ -92,7 +110,7 @@ impl Editor {
             self.document.restore_history(stack);
             self.reset_layer_selection();
             self.document.modified = true;
-            self.mark_full();
+            self.mark_composited_full();
         }
     }
 
@@ -103,7 +121,7 @@ impl Editor {
             self.document.restore_history(stack);
             self.reset_layer_selection();
             self.document.modified = true;
-            self.mark_full();
+            self.mark_composited_full();
         }
     }
 
@@ -113,7 +131,7 @@ impl Editor {
             self.document.restore_history(stack);
             self.reset_layer_selection();
             self.document.modified = true;
-            self.mark_full();
+            self.mark_composited_full();
         }
     }
 
@@ -510,12 +528,22 @@ impl Editor {
 
     pub(super) fn mark_full(&mut self) {
         self.canvas_dirty = true;
+        self.full_upload_ready = false;
         self.dirty_rect = None;
+        self.dirty_regions.clear();
         self.document.active_revision = self.document.active_revision.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Only for operations that have already recomputed the whole composite.
+    /// Later pixel or metadata invalidation must revoke this reuse.
+    fn mark_composited_full(&mut self) {
+        self.mark_full();
+        self.full_upload_ready = true;
+    }
+
     pub(super) fn mark_rect(&mut self, rect: RectI) {
+        self.full_upload_ready = false;
         self.dirty_rect = Some(match self.dirty_rect {
             Some(existing) => existing.union(rect),
             None => rect,
@@ -528,36 +556,108 @@ impl Editor {
         self.mark_rect(RectI::between(a, b).expand(radius));
     }
 
-    pub fn take_pending_upload(&mut self) -> Option<Upload> {
+    pub(super) fn mark_regions(&mut self, regions: Vec<RectI>) {
+        self.full_upload_ready = false;
+        for rect in regions {
+            merge_region(&mut self.dirty_regions, rect);
+        }
+        if self.dirty_regions.len() > 32 {
+            let rect = self.dirty_regions.drain(..).reduce(RectI::union).unwrap();
+            self.dirty_rect = Some(self.dirty_rect.map_or(rect, |old| old.union(rect)));
+        }
+        self.document.active_revision = self.document.active_revision.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Pending canvas rectangles, consumed together by the renderer.
+    pub fn take_pending_uploads(&mut self) -> Vec<Upload> {
         let width = self.document.width();
         let height = self.document.height();
 
         if self.canvas_dirty {
             self.canvas_dirty = false;
             self.dirty_rect = None;
-            self.document.composite_all();
-            return Some(Upload {
+            self.dirty_regions.clear();
+            if !self.full_upload_ready {
+                self.document.composite_all();
+            }
+            self.full_upload_ready = false;
+            return vec![Upload {
                 x: 0,
                 y: 0,
                 width,
                 height,
                 data: self.document.composite.shared_data(),
-            });
+            }];
         }
 
-        let rect = self.dirty_rect.take()?;
-        let (x, y, w, h) = if rect.covers(width, height) {
-            (0, 0, width, height)
+        let mut pending = std::mem::take(&mut self.dirty_regions);
+        if let Some(rect) = self.dirty_rect.take() {
+            pending.push(rect);
+        }
+        let mut rects = Vec::new();
+        for rect in pending {
+            if let Some((x, y, w, h)) = rect.clamped(width, height) {
+                merge_region(
+                    &mut rects,
+                    RectI::between(
+                        (x as i32, y as i32),
+                        ((x + w - 1) as i32, (y + h - 1) as i32),
+                    ),
+                );
+            }
+        }
+        if rects.len() > 32 {
+            rects = vec![rects.into_iter().reduce(RectI::union).unwrap()];
+        }
+        if rects.iter().any(|r| r.covers(width, height)) {
+            self.document.composite_all();
+            return vec![Upload {
+                x: 0,
+                y: 0,
+                width,
+                height,
+                data: self.document.composite.shared_data(),
+            }];
+        }
+        rects
+            .into_iter()
+            .map(|rect| {
+                let (x, y, w, h) = rect.clamped(width, height).unwrap();
+                self.document.composite_rect(x, y, w, h);
+                Upload {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    data: std::sync::Arc::new(self.document.composite.region_rgba(x, y, w, h)),
+                }
+            })
+            .collect()
+    }
+
+    /// Compatibility API for consumers that accept only one rectangle.
+    pub fn take_pending_upload(&mut self) -> Option<Upload> {
+        let mut uploads = self.take_pending_uploads();
+        if uploads.len() <= 1 {
+            return uploads.pop();
+        }
+        let x = uploads.iter().map(|u| u.x).min().unwrap();
+        let y = uploads.iter().map(|u| u.y).min().unwrap();
+        let w = uploads.iter().map(|u| u.x + u.width).max().unwrap() - x;
+        let h = uploads.iter().map(|u| u.y + u.height).max().unwrap() - y;
+        let data = if x == 0 && y == 0 && w == self.document.width() && h == self.document.height()
+        {
+            self.document.composite.shared_data()
         } else {
-            rect.clamped(width, height)?
+            std::sync::Arc::new(self.document.composite.region_rgba(x, y, w, h))
         };
-        self.document.composite_rect(x, y, w, h);
         Some(Upload {
             x,
             y,
             width: w,
             height: h,
-            data: std::sync::Arc::new(self.document.composite.region_rgba(x, y, w, h)),
+            data,
         })
     }
 

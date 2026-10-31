@@ -398,7 +398,10 @@ pub struct Editor {
     smooth_target: Option<(i32, i32)>,
     rng: Rng,
     canvas_dirty: bool,
+    /// A full upload is pending, but history restoration already composed it.
+    full_upload_ready: bool,
     dirty_rect: Option<RectI>,
+    dirty_regions: Vec<RectI>,
     revision: u64,
 }
 /// Values configured by controls. No widget or transient operation state.
@@ -593,7 +596,9 @@ impl Editor {
             smooth_target: None,
             rng: Rng(0x1234_5678),
             canvas_dirty: true,
+            full_upload_ready: false,
             dirty_rect: None,
+            dirty_regions: Vec::new(),
             revision: 0,
         }
     }

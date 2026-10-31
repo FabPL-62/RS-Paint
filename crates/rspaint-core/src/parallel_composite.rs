@@ -6,7 +6,26 @@ use crate::{
 };
 
 pub(crate) fn timed_scan_candidate(region: Region) -> bool {
-    region.width as u64 * region.height as u64 > 8 * 1024 * 1024
+    region.width as u64 * region.height as u64 > 128 * 1024
+}
+
+/// Plain layers above the active branch depend on its changing backdrop.
+/// Static group interiors and bottom stacks can instead benefit from cache;
+/// do not discard their medium-size cached work for a direct scan.
+pub(crate) fn has_uncached_upper_layers(nodes: &[LayerNode], active: u64) -> bool {
+    let contains = |node: &LayerNode| {
+        node.id() == active || crate::layer::find_node(node.children(), active).is_some()
+    };
+    let split = nodes.iter().rposition(contains).map_or(0, |i| i + 1);
+    nodes[..split].iter().any(|node| match node {
+        LayerNode::Layer(layer) => layer.id != active && layer.visible && layer.opacity > 0,
+        LayerNode::Group(group) => {
+            group.visible
+                && group.opacity > 0
+                && contains(node)
+                && has_uncached_upper_layers(&group.children, active)
+        }
+    })
 }
 
 /// Use only work measured in this update, never a previous frame's timing.
@@ -16,9 +35,18 @@ pub(crate) fn slow_scan_worthwhile(
     sampled_pixels: u64,
     elapsed: std::time::Duration,
 ) -> bool {
-    timed_scan_candidate(remaining)
-        && sampled_pixels >= 1024 * 1024
+    let remaining_pixels = remaining.width as u64 * remaining.height as u64;
+    if remaining_pixels > 8 * 1024 * 1024 {
+        return sampled_pixels >= 1024 * 1024
+            && elapsed.as_secs_f64() * (1024 * 1024) as f64 / sampled_pixels as f64 >= 0.05;
+    }
+    // A short prefix also admits medium previews with substantial work left.
+    // Cheap cached previews and small pointer rectangles stay serial.
+    remaining_pixels >= 64 * 1024
+        && sampled_pixels >= 16 * 1024
+        && elapsed.as_secs_f64() >= 0.002
         && elapsed.as_secs_f64() * (1024 * 1024) as f64 / sampled_pixels as f64 >= 0.05
+        && elapsed.as_secs_f64() * remaining_pixels as f64 / sampled_pixels as f64 >= 0.008
 }
 
 pub(crate) fn render(
@@ -73,12 +101,44 @@ mod tests {
     use crate::{Color, Layer, LayerBlend, LayerGroup};
 
     #[test]
+    fn medium_probe_preserves_cacheable_stacks_and_hidden_branches() {
+        let pixels = PixelBuffer::transparent(1, 1);
+        let active = LayerNode::Layer(Layer::new(1, "Active", pixels.clone()));
+        let upper = LayerNode::Layer(Layer::new(2, "Upper", pixels));
+        assert!(has_uncached_upper_layers(
+            &[upper.clone(), active.clone()],
+            1
+        ));
+        assert!(!has_uncached_upper_layers(
+            &[active.clone(), upper.clone()],
+            1
+        ));
+        let mut group = LayerGroup::new(3, "Static group");
+        group.children.push(upper.clone());
+        assert!(!has_uncached_upper_layers(
+            &[LayerNode::Group(group.clone()), active.clone()],
+            1
+        ));
+        group.children.push(active);
+        let mut nodes = vec![LayerNode::Group(group)];
+        assert!(has_uncached_upper_layers(&nodes, 1));
+        nodes[0].set_visible(false);
+        assert!(!has_uncached_upper_layers(&nodes, 1));
+        nodes[0].set_visible(true);
+        nodes[0].set_opacity(0);
+        assert!(!has_uncached_upper_layers(&nodes, 1));
+        nodes[0].set_opacity(73);
+        nodes[0].children_mut().unwrap()[0].set_opacity(0);
+        assert!(!has_uncached_upper_layers(&nodes, 1));
+    }
+
+    #[test]
     fn timed_admission_requires_a_large_slow_current_sample() {
         use std::time::Duration;
         let large = Region::new(7, 13, 6000, 3744);
         let sample = 6000 * 256;
-        assert!(!timed_scan_candidate(Region::new(0, 0, 4096, 2048)));
-        assert!(timed_scan_candidate(Region::new(0, 0, 4096, 2049)));
+        assert!(!timed_scan_candidate(Region::new(0, 0, 512, 256)));
+        assert!(timed_scan_candidate(Region::new(0, 0, 512, 257)));
         assert!(slow_scan_worthwhile(
             large,
             1024 * 1024,
@@ -110,6 +170,35 @@ mod tests {
             large,
             24_000_000,
             Duration::from_millis(50)
+        ));
+    }
+
+    #[test]
+    fn medium_admission_requires_slow_prefix_and_enough_remaining_work() {
+        use std::time::Duration;
+        let curve = Region::new(193, 257, 610, 340);
+        let sample = 610 * 64;
+        assert!(slow_scan_worthwhile(
+            curve,
+            sample,
+            Duration::from_millis(6)
+        ));
+        assert!(!slow_scan_worthwhile(
+            curve,
+            sample,
+            Duration::from_millis(1)
+        ));
+        assert!(!slow_scan_worthwhile(curve, 8000, Duration::from_millis(6)));
+        assert!(!slow_scan_worthwhile(
+            Region::new(7, 13, 64, 48),
+            sample,
+            Duration::from_secs(1)
+        ));
+        // The rate is high enough, but the projected remainder is below 8 ms.
+        assert!(!slow_scan_worthwhile(
+            Region::new(0, 0, 256, 256),
+            sample,
+            Duration::from_millis(3)
         ));
     }
 

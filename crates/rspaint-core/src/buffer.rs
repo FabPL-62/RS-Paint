@@ -30,6 +30,10 @@ pub struct PixelBuffer {
     data: Arc<Vec<u8>>,
     versions: Arc<Vec<u64>>,
     write_version: u64,
+    /// Blocks still bearing this generation have the alpha of the last known
+    /// uniform initialization/fill. Later mutations use a distinct generation.
+    uniform_version: u64,
+    uniform_alpha: u8,
 }
 
 // Tracking is derived state, not part of image equality or debug output.
@@ -70,7 +74,9 @@ impl PixelBuffer {
             height,
             data: Arc::new(data),
             versions: Arc::new(vec![version; blocks]),
-            write_version: version,
+            write_version: next_version(),
+            uniform_version: version,
+            uniform_alpha: fill[3],
         }
     }
 
@@ -135,6 +141,25 @@ impl PixelBuffer {
 
     pub(crate) fn history_versions(&self) -> Arc<Vec<u64>> {
         self.versions.clone()
+    }
+
+    pub(crate) fn known_block_alpha(&self, version: u64) -> Option<u8> {
+        (version == self.uniform_version).then_some(self.uniform_alpha)
+    }
+
+    pub(crate) fn known_empty_alpha(&self) -> bool {
+        self.uniform_alpha == 0 && self.versions.iter().all(|v| *v == self.uniform_version)
+    }
+
+    pub(crate) fn mostly_known_transparent(&self) -> bool {
+        self.uniform_alpha == 0
+            && self
+                .versions
+                .iter()
+                .filter(|v| **v == self.uniform_version)
+                .count()
+                .saturating_mul(4)
+                >= self.versions.len().saturating_mul(3)
     }
 
     /// Used only after reconstruction from these exact immutable blocks.
@@ -252,6 +277,7 @@ impl PixelBuffer {
         let w = w.min(self.width - x).max(1);
         let h = h.min(self.height - y).max(1);
         let mut out = Self::transparent(w, h);
+        out.mark_region(0, 0, w, h);
         let len = w as usize * 4;
         let dst = Arc::make_mut(&mut out.data);
         for row in 0..h {
@@ -312,6 +338,7 @@ impl PixelBuffer {
         let mut out = Self::new(width, height, fill);
         let copy_w = width.min(self.width);
         let copy_h = height.min(self.height);
+        out.mark_region(0, 0, copy_w, copy_h);
         let len = copy_w as usize * 4;
         let out_width = out.width as usize;
         let data = Arc::make_mut(&mut out.data);
@@ -353,10 +380,13 @@ impl PixelBuffer {
     /// Fills the whole buffer with a single color.
     pub fn fill(&mut self, color: Color) {
         self.mark_region(0, 0, self.width, self.height);
+        self.uniform_version = self.write_version;
+        self.uniform_alpha = color.a;
         let color = color.to_array();
         for pixel in Arc::make_mut(&mut self.data).chunks_exact_mut(4) {
             pixel.copy_from_slice(&color);
         }
+        self.write_version = next_version();
     }
 
     /// Clears the buffer to fully transparent.
@@ -368,6 +398,67 @@ impl PixelBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_known_alpha(buffer: &PixelBuffer) {
+        let versions = buffer.history_versions();
+        let cols = buffer.width().div_ceil(HISTORY_BLOCK_SIZE);
+        for (index, version) in versions.iter().enumerate() {
+            if let Some(alpha) = buffer.known_block_alpha(*version) {
+                let x = index as u32 % cols * HISTORY_BLOCK_SIZE;
+                let y = index as u32 / cols * HISTORY_BLOCK_SIZE;
+                for yy in y..(y + HISTORY_BLOCK_SIZE).min(buffer.height()) {
+                    for xx in x..(x + HISTORY_BLOCK_SIZE).min(buffer.width()) {
+                        assert_eq!(buffer.get(xx, yy).unwrap().a, alpha);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn uniform_alpha_seeds_are_revoked_by_first_writes_and_reset_by_fill() {
+        let mut buffer = PixelBuffer::transparent(259, 259);
+        assert!(buffer.known_empty_alpha());
+        buffer.set(1, 1, Color::BLACK);
+        assert!(!buffer.known_empty_alpha());
+        check_known_alpha(&buffer);
+        let mut left = buffer.clone();
+        let mut right = buffer.clone();
+        left.row_mut(128, 128, 1)
+            .copy_from_slice(&[10, 20, 30, 127]);
+        right.set(258, 258, Color::BLACK);
+        check_known_alpha(&left);
+        check_known_alpha(&right);
+        buffer.fill(Color::rgba(30, 60, 90, 73));
+        check_known_alpha(&buffer);
+        assert!(buffer
+            .history_versions()
+            .iter()
+            .all(|v| buffer.known_block_alpha(*v) == Some(73)));
+        buffer.set(258, 258, Color::TRANSPARENT);
+        check_known_alpha(&buffer);
+        buffer.clear();
+        assert!(buffer.known_empty_alpha());
+        buffer.data_mut()[3] = 255;
+        assert!(!buffer.known_empty_alpha());
+        assert!(buffer
+            .history_versions()
+            .iter()
+            .all(|v| buffer.known_block_alpha(*v).is_none()));
+    }
+
+    #[test]
+    fn copying_constructors_do_not_retain_fill_proofs_for_copied_pixels() {
+        let mut source = PixelBuffer::transparent(259, 259);
+        source.set(1, 1, Color::BLACK);
+        let cropped = source.cropped(0, 0, 130, 130);
+        let resized = source.resized(390, 390, Color::TRANSPARENT);
+        let offset = source.resized_with_offset(390, 390, 50, 50, Color::rgba(1, 2, 3, 73));
+        for buffer in [&cropped, &resized, &offset] {
+            assert!(!buffer.known_empty_alpha());
+            check_known_alpha(buffer);
+        }
+    }
 
     #[test]
     fn new_fills_and_exposes_size() {

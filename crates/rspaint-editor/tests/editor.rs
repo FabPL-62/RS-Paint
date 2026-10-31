@@ -8,6 +8,340 @@ fn editor() -> Editor {
     editor
 }
 
+fn check_full_composite_reference(e: &Editor) {
+    let (w, h) = (e.document.width(), e.document.height());
+    let mut expected = PixelBuffer::transparent(w, h);
+    rspaint_core::layer::composite_region(
+        &e.document.layers,
+        e.document.active,
+        &e.document.buffer,
+        rspaint_core::layer::Region::new(0, 0, w, h),
+        &mut expected,
+    );
+    assert_eq!(e.document.composite, expected);
+}
+
+#[test]
+fn separated_upload_batches_preserve_gaps_for_all_modes_and_groups() {
+    for mode in rspaint_core::LayerBlend::ALL {
+        for grouped in [false, true] {
+            let mut e = editor();
+            e.load_buffer(PixelBuffer::new(512, 384, Color::WHITE), None);
+            let group = if grouped {
+                e.add_group();
+                Some(e.active_layer_id())
+            } else {
+                None
+            };
+            e.add_layer();
+            let active = e.active_layer_id();
+            e.document.buffer.set(0, 0, Color::rgba(20, 80, 140, 180));
+            e.document.buffer.set(511, 383, Color::rgba(140, 80, 20, 1));
+            e.commit("Corners");
+            let target = group.unwrap_or(active);
+            e.set_layer_blend(target, mode);
+            e.invalidate_canvas();
+            drop(e.take_pending_uploads());
+            for operation in 0..3 {
+                match operation {
+                    0 => e.set_layer_opacity(target, 37),
+                    _ => e.toggle_layer_visible(target),
+                }
+                let patches = e.take_pending_uploads();
+                assert_eq!(patches.len(), 2, "{mode:?}, grouped {grouped}");
+                assert_eq!(patches.iter().map(|p| p.data.len()).sum::<usize>(), 8);
+                check_full_composite_reference(&e);
+                for patch in patches {
+                    assert_eq!(
+                        patch.data.as_slice(),
+                        e.document.composite.region_rgba(
+                            patch.x,
+                            patch.y,
+                            patch.width,
+                            patch.height
+                        )
+                    );
+                }
+                assert!(e.take_pending_uploads().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn separated_pending_updates_merge_traces_and_full_history_restores() {
+    let mut e = editor();
+    e.load_buffer(PixelBuffer::new(512, 384, Color::WHITE), None);
+    e.add_layer();
+    let layer = e.active_layer_id();
+    e.document.buffer.set(0, 0, Color::BLACK);
+    e.document.buffer.set(511, 383, Color::BLACK);
+    e.commit("Corners");
+    e.invalidate_canvas();
+    drop(e.take_pending_uploads());
+    // Repeated slider events should coalesce the same patches, not hit the cap.
+    for value in 50..90 {
+        e.set_layer_opacity(layer, value);
+    }
+    e.begin_stroke((200, 200), PointerButton::Primary);
+    e.end_stroke(false);
+    let patches = e.take_pending_uploads();
+    assert_eq!(patches.len(), 3);
+    check_full_composite_reference(&e);
+    e.set_layer_opacity(layer, 37);
+    e.undo();
+    let patches = e.take_pending_uploads();
+    assert_eq!(patches.len(), 1);
+    assert_eq!((patches[0].width, patches[0].height), (512, 384));
+    assert!(std::sync::Arc::ptr_eq(
+        &patches[0].data,
+        &e.document.composite.shared_data()
+    ));
+    check_full_composite_reference(&e);
+    // Existing single-upload clients still receive all corners in one image.
+    e.set_layer_opacity(layer, 73);
+    let upload = e.take_pending_upload().unwrap();
+    assert_eq!(
+        (upload.x, upload.y, upload.width, upload.height),
+        (0, 0, 512, 384)
+    );
+    assert_eq!(upload.data.as_slice(), e.document.composite.data());
+    check_full_composite_reference(&e);
+}
+
+#[test]
+fn dense_layer_metadata_preserves_shared_full_canvas_uploads() {
+    let mut e = editor();
+    e.add_layer();
+    let layer = e.active_layer_id();
+    e.document.buffer.fill(Color::rgba(30, 80, 140, 180));
+    e.commit("Dense");
+    e.invalidate_canvas();
+    drop(e.take_pending_upload());
+    for op in 0..4 {
+        match op {
+            0 => e.set_layer_opacity(layer, 37),
+            1 | 2 => e.toggle_layer_visible(layer),
+            _ => e.set_layer_blend(layer, rspaint_core::LayerBlend::Multiply),
+        }
+        let upload = e.take_pending_upload().unwrap();
+        assert_eq!(
+            (upload.x, upload.y, upload.width, upload.height),
+            (0, 0, 16, 16)
+        );
+        assert!(std::sync::Arc::ptr_eq(
+            &upload.data,
+            &e.document.composite.shared_data()
+        ));
+        check_full_composite_reference(&e);
+    }
+}
+
+#[test]
+fn sparse_metadata_uploads_only_alpha_bounds_for_all_modes_and_groups() {
+    for mode in rspaint_core::LayerBlend::ALL {
+        for grouped in [false, true] {
+            let mut e = editor();
+            e.load_buffer(PixelBuffer::new(40, 30, Color::WHITE), None);
+            let group = if grouped {
+                e.add_group();
+                Some(e.active_layer_id())
+            } else {
+                None
+            };
+            e.add_layer();
+            let active = e.active_layer_id();
+            e.document.buffer.set(7, 8, Color::rgba(20, 80, 140, 1));
+            e.document.buffer.set(11, 12, Color::rgba(200, 40, 70, 180));
+            e.document.buffer.set(29, 25, Color::rgba(30, 60, 90, 0));
+            e.commit("Sparse fixture");
+            let target = group.unwrap_or(active);
+            e.set_layer_blend(target, mode);
+            e.invalidate_canvas();
+            drop(e.take_pending_upload());
+            for operation in 0..4 {
+                match operation {
+                    0 => e.set_layer_opacity(target, 37),
+                    1 | 2 => e.toggle_layer_visible(target),
+                    _ => e.set_layer_opacity(target, 100),
+                }
+                let upload = e.take_pending_upload().unwrap();
+                assert_eq!(
+                    (upload.x, upload.y, upload.width, upload.height),
+                    (7, 8, 5, 5),
+                    "{mode:?}, group {grouped}"
+                );
+                check_full_composite_reference(&e);
+                assert_eq!(
+                    upload.data.as_slice(),
+                    e.document.composite.region_rgba(7, 8, 5, 5)
+                );
+                assert!(e.take_pending_upload().is_none());
+            }
+            e.set_layer_blend(
+                target,
+                if mode == rspaint_core::LayerBlend::Overlay {
+                    rspaint_core::LayerBlend::Normal
+                } else {
+                    rspaint_core::LayerBlend::Overlay
+                },
+            );
+            let upload = e.take_pending_upload().unwrap();
+            assert_eq!(
+                (upload.x, upload.y, upload.width, upload.height),
+                (7, 8, 5, 5)
+            );
+            check_full_composite_reference(&e);
+        }
+    }
+}
+
+#[test]
+fn sparse_metadata_bounds_relearn_after_paint_and_merge_pending_updates() {
+    let mut e = editor();
+    e.add_layer();
+    let layer = e.active_layer_id();
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.end_stroke(false);
+    drop(e.take_pending_upload());
+    e.set_layer_opacity(layer, 50);
+    drop(e.take_pending_upload());
+    // Keep a stroke in progress: its tree entry is a 1x1 placeholder. The
+    // bounds query must use the active working pixels and union pending dirt.
+    e.begin_stroke((12, 12), PointerButton::Primary);
+    e.set_layer_opacity(layer, 37);
+    let upload = e.take_pending_upload().unwrap();
+    assert!(upload.x <= 2 && upload.y <= 2);
+    assert!(upload.x + upload.width > 12 && upload.y + upload.height > 12);
+    check_full_composite_reference(&e);
+    e.end_stroke(false);
+    drop(e.take_pending_upload());
+    // A pending full invalidation still wins over a later regional change.
+    e.invalidate_canvas();
+    e.toggle_layer_visible(layer);
+    let upload = e.take_pending_upload().unwrap();
+    assert_eq!(
+        (upload.x, upload.y, upload.width, upload.height),
+        (0, 0, 16, 16)
+    );
+    check_full_composite_reference(&e);
+}
+
+#[test]
+fn empty_layer_metadata_preserves_history_and_other_pending_pixels_without_uploading() {
+    let mut e = editor();
+    e.add_layer();
+    let empty = e.active_layer_id();
+    drop(e.take_pending_upload());
+    let before = e.history.current();
+    e.toggle_layer_visible(empty);
+    assert_ne!(e.history.current(), before);
+    assert!(e.take_pending_upload().is_none());
+    e.set_layer_opacity(empty, 37);
+    e.set_layer_blend(empty, rspaint_core::LayerBlend::Multiply);
+    assert!(e.take_pending_upload().is_none());
+    let base = e.layers()[1].id();
+    e.select_layer(base, false, false);
+    e.begin_stroke((8, 8), PointerButton::Primary);
+    e.end_stroke(false);
+    e.toggle_layer_visible(empty);
+    assert!(e.take_pending_upload().is_some());
+    check_full_composite_reference(&e);
+}
+
+#[test]
+fn history_upload_reuses_the_already_valid_composite_after_resize_and_jump() {
+    fn check(e: &mut Editor, dimensions: (u32, u32)) {
+        let mut expected = PixelBuffer::transparent(dimensions.0, dimensions.1);
+        rspaint_core::layer::composite_region(
+            &e.document.layers,
+            e.document.active,
+            &e.document.buffer,
+            rspaint_core::layer::Region::new(0, 0, dimensions.0, dimensions.1),
+            &mut expected,
+        );
+        // The public restore contract remains eager, before uploading.
+        assert_eq!(e.document.composite, expected);
+        let ready = e.document.composite.shared_data();
+        let upload = e.take_pending_upload().unwrap();
+        assert_eq!(
+            (upload.x, upload.y, upload.width, upload.height),
+            (0, 0, dimensions.0, dimensions.1)
+        );
+        assert_eq!(upload.data.as_slice(), expected.data());
+        // Holding ready would force COW if even a cached recomposition wrote
+        // the flattened buffer. Timing-free proof of avoiding that work.
+        assert!(std::sync::Arc::ptr_eq(&ready, &upload.data));
+        assert!(e.take_pending_upload().is_none());
+    }
+    let mut e = editor();
+    let root = e.history.current();
+    e.add_layer();
+    e.begin_stroke((2, 2), PointerButton::Primary);
+    e.end_stroke(false);
+    let painted = e.history.current();
+    e.resize_document(23, 19, false);
+    drop(e.take_pending_upload());
+    e.undo();
+    check(&mut e, (16, 16));
+    e.redo();
+    check(&mut e, (23, 19));
+    e.jump_to_history(root);
+    check(&mut e, (16, 16));
+    // Several restores before any render must upload only the latest state.
+    e.jump_to_history(painted);
+    e.undo();
+    e.redo();
+    check(&mut e, (16, 16));
+}
+
+#[test]
+fn edits_before_a_history_upload_revoke_composite_reuse() {
+    for operation in 0..4 {
+        let mut e = editor();
+        e.add_layer();
+        e.begin_stroke((2, 2), PointerButton::Primary);
+        e.end_stroke(false);
+        e.resize_document(23, 19, false);
+        drop(e.take_pending_upload());
+        e.undo();
+        let ready = e.document.composite.shared_data();
+        match operation {
+            0 => {
+                e.begin_stroke((3, 3), PointerButton::Primary);
+                e.end_stroke(false);
+            }
+            1 => {
+                let active = e.active_layer_id();
+                e.set_layer_opacity(active, 37);
+            }
+            2 => e.invalidate_canvas(),
+            _ => e.load_buffer(PixelBuffer::new(7, 5, Color::rgb(30, 60, 90)), None),
+        }
+        let (w, h) = (e.document.width(), e.document.height());
+        let mut expected = PixelBuffer::transparent(w, h);
+        rspaint_core::layer::composite_region(
+            &e.document.layers,
+            e.document.active,
+            &e.document.buffer,
+            rspaint_core::layer::Region::new(0, 0, w, h),
+            &mut expected,
+        );
+        let upload = e.take_pending_upload().unwrap();
+        assert_eq!(
+            (upload.x, upload.y, upload.width, upload.height),
+            (0, 0, w, h)
+        );
+        assert_eq!(
+            upload.data.as_slice(),
+            expected.data(),
+            "operation {operation}"
+        );
+        assert!(!std::sync::Arc::ptr_eq(&ready, &upload.data));
+        assert!(e.take_pending_upload().is_none());
+    }
+}
+
 #[test]
 fn opened_image_uses_exact_top_left_color_as_its_secondary_color() {
     let mut e = editor();
